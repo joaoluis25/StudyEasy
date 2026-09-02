@@ -1,0 +1,1473 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Central de Estudos</title>
+<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+
+<body>
+
+<div id="app"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================================
+   PERSISTÊNCIA
+===================================================================== */
+const STORAGE_KEY = 'central-estudos-data-v1';
+let SAVE_TIMER = null;
+let SAVING = false;
+
+function defaultState(){
+  return {
+    topics: [], // {id, name, parentId, color, progress}
+    notes: [],  // {id,title,html,topicId,tags[],checklist[],priority,favorite,reviewOn,nextReview,interval,createdAt,updatedAt}
+    goals: [],
+    sessions: [],
+    events: [],
+    doubts: [],
+    questions: [],
+    flashcards: [],
+    settings: {
+      terms:{area:'Área', sub:'Tópico'},
+      pomodoro:{work:25, brk:5},
+      reviewIntervals:[1,3,7,16,35]
+    }
+  };
+}
+let STATE = defaultState();
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      STATE = Object.assign(defaultState(), parsed);
+      STATE.settings = Object.assign(defaultState().settings, parsed.settings||{});
+    }
+  }catch(e){
+    console.error('Erro ao carregar dados salvos', e);
+  }
+}
+function saveState(){
+  clearTimeout(SAVE_TIMER);
+  SAVE_TIMER = setTimeout(()=>{
+    try{
+      SAVING = true;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(STATE));
+    }catch(e){ console.error('Erro ao salvar', e); }
+    SAVING = false;
+  }, 350);
+}
+
+/* =====================================================================
+   HELPERS
+===================================================================== */
+const uid = ()=> Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
+const todayISO = ()=> new Date().toISOString().slice(0,10);
+function fmtDate(iso){
+  const d = new Date(iso+'T00:00:00');
+  return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'});
+}
+function fmtDateShort(iso){
+  const d = new Date(iso+'T00:00:00');
+  return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'});
+}
+function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function stripHtml(html){ const d=document.createElement('div'); d.innerHTML=html||''; return d.textContent||''; }
+function toast(msg){
+  const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._timer); t._timer=setTimeout(()=>t.classList.remove('show'), 2200);
+}
+function topicPath(id){
+  const chain=[]; let cur=STATE.topics.find(t=>t.id===id);
+  while(cur){ chain.unshift(cur.name); cur=STATE.topics.find(t=>t.id===cur.parentId); }
+  return chain.join(' → ');
+}
+function topicColorClass(id){
+  const t = STATE.topics.find(x=>x.id===id);
+  if(!t) return '';
+  return 'color-'+(t.color||1);
+}
+function allDescendantIds(id){
+  let out=[id];
+  STATE.topics.filter(t=>t.parentId===id).forEach(c=>{ out = out.concat(allDescendantIds(c.id)); });
+  return out;
+}
+function dateKey(d){ return d.toISOString().slice(0,10); }
+
+// Aggregate "activity" per day from notes(created/updated), sessions, goals-updates
+function activityByDay(){
+  const map = {};
+  const bump = (iso, weight)=>{ if(!iso) return; const k = iso.slice(0,10); map[k]=(map[k]||0)+weight; };
+  STATE.notes.forEach(n=>{ bump(n.createdAt,2); if(n.updatedAt && n.updatedAt.slice(0,10)!==n.createdAt.slice(0,10)) bump(n.updatedAt,1); });
+  STATE.sessions.forEach(s=> bump(s.date, 2));
+  STATE.doubts.forEach(d=> bump(d.createdAt,1));
+  STATE.flashcards.forEach(f=> bump(f.createdAt,1));
+  return map;
+}
+function computeStreak(){
+  const map = activityByDay();
+  let streak=0; let cur=new Date();
+  while(true){
+    const k = dateKey(cur);
+    if(map[k]) { streak++; cur.setDate(cur.getDate()-1); }
+    else if(k===todayISO()){ cur.setDate(cur.getDate()-1); } // today with no activity yet still allow yesterday chain
+    else break;
+  }
+  let best=0, run=0;
+  const days = Object.keys(map).sort();
+  let prev=null;
+  days.forEach(d=>{
+    if(prev){
+      const diff = (new Date(d)-new Date(prev))/86400000;
+      run = diff===1 ? run+1 : 1;
+    } else run=1;
+    best = Math.max(best, run);
+    prev = d;
+  });
+  return {current:streak, best};
+}
+function totalStudyMinutes(){ return STATE.sessions.reduce((a,s)=>a+(s.duration||0),0); }
+function minutesToHM(m){ const h=Math.floor(m/60), mm=Math.round(m%60); return h>0? h+'h '+mm+'min' : mm+'min'; }
+
+/* =====================================================================
+   ROUTER / STATE UI
+===================================================================== */
+let ROUTE = 'dashboard';
+let SELECTED_DAY = todayISO();
+let SIDEBAR_OPEN = false;
+let TIMER = { running:false, mode:'work', remaining:25*60, intervalId:null, topicId:null };
+
+const ROUTES = [
+  {id:'dashboard', label:'Dashboard', ic:'🏠'},
+  {id:'calendario', label:'Calendário', ic:'📅'},
+  {id:'meudia', label:'Meu Dia', ic:'🕐'},
+  {id:'anotacoes', label:'Anotações', ic:'📝'},
+  {id:'conteudos', label:'Conteúdos', ic:'📚'},
+  {id:'metas', label:'Metas', ic:'🎯'},
+  {id:'revisoes', label:'Revisões', ic:'📖'},
+  {id:'sessoes', label:'Sessões', ic:'⏱️'},
+  {id:'duvidas', label:'Dúvidas', ic:'❓'},
+  {id:'flashcards', label:'Flashcards', ic:'🧠'},
+  {id:'questoes', label:'Questões', ic:'📋'},
+  {id:'eventos', label:'Provas & Eventos', ic:'🔔'},
+  {id:'estatisticas', label:'Estatísticas', ic:'📊'},
+  {id:'favoritos', label:'Favoritos', ic:'⭐'},
+  {id:'historico', label:'Histórico', ic:'🗂️'},
+  {id:'config', label:'Configurações', ic:'⚙️'},
+];
+const ROUTE_TITLES = Object.fromEntries(ROUTES.map(r=>[r.id, r.label]));
+
+function navigate(route){ ROUTE = route; SIDEBAR_OPEN=false; render(); }
+
+/* =====================================================================
+   RENDER SHELL
+===================================================================== */
+function render(){
+  const app = document.getElementById('app');
+  const streak = computeStreak();
+  app.innerHTML = `
+    ${SIDEBAR_OPEN?'<div class="backdrop-close" onclick="SIDEBAR_OPEN=false;render()"></div>':''}
+    <div class="sidebar ${SIDEBAR_OPEN?'open':''}">
+      <div class="brand"><div class="dot"></div><span>Central de Estudos</span></div>
+      <div class="nav">
+        ${ROUTES.map(r=>`<button class="nav-item ${ROUTE===r.id?'active':''}" onclick="navigate('${r.id}')"><span class="ic">${r.ic}</span>${r.label}</button>`).join('')}
+      </div>
+      <div class="sidebar-foot">
+        <div class="streak-pill">
+          <span style="font-size:16px">🔥</span>
+          <div><div class="n">${streak.current}</div><div class="l">dias seguidos</div></div>
+        </div>
+      </div>
+    </div>
+    <button class="mobile-toggle" onclick="SIDEBAR_OPEN=!SIDEBAR_OPEN;render()">${SIDEBAR_OPEN?'✕':'☰'}</button>
+    <div class="main">
+      <div class="topbar">
+        <div style="display:flex;align-items:center;">
+          <button class="mobile-menu-btn" onclick="SIDEBAR_OPEN=true;render()">☰</button>
+          <div>
+            <h1>${ROUTE_TITLES[ROUTE]}</h1>
+            <div class="sub">${topbarSubtitle()}</div>
+          </div>
+        </div>
+        <button class="search-btn" onclick="openSearch()">🔍 Buscar em tudo...<kbd>/</kbd></button>
+      </div>
+      <div class="content" id="content"></div>
+    </div>
+  `;
+  const content = document.getElementById('content');
+  content.innerHTML = renderRoute();
+  afterRender();
+}
+function topbarSubtitle(){
+  const d = new Date();
+  const opts = {weekday:'long', day:'numeric', month:'long'};
+  return d.toLocaleDateString('pt-BR', opts);
+}
+function renderRoute(){
+  switch(ROUTE){
+    case 'dashboard': return viewDashboard();
+    case 'calendario': return viewCalendario();
+    case 'meudia': return viewMeuDia();
+    case 'anotacoes': return viewAnotacoes();
+    case 'conteudos': return viewConteudos();
+    case 'metas': return viewMetas();
+    case 'revisoes': return viewRevisoes();
+    case 'sessoes': return viewSessoes();
+    case 'duvidas': return viewDuvidas();
+    case 'flashcards': return viewFlashcards();
+    case 'questoes': return viewQuestoes();
+    case 'eventos': return viewEventos();
+    case 'estatisticas': return viewEstatisticas();
+    case 'favoritos': return viewFavoritos();
+    case 'historico': return viewHistorico();
+    case 'config': return viewConfig();
+    default: return '';
+  }
+}
+function afterRender(){
+  // hooks per-route after DOM injected
+  if(ROUTE==='sessoes') refreshTimerDisplay();
+}
+
+/* =====================================================================
+   DASHBOARD
+===================================================================== */
+function viewDashboard(){
+  const streak = computeStreak();
+  const dueReviews = getDueReviews();
+  const upcoming = STATE.events.filter(e=>e.date>=todayISO()).sort((a,b)=>a.date.localeCompare(b.date)).slice(0,3);
+  const recent = recentActivity(6);
+  const totalMin = totalStudyMinutes();
+
+  if(STATE.topics.length===0 && STATE.notes.length===0){
+    return `
+    <div class="empty-state" style="padding:80px 20px;">
+      <div class="ic">📚</div>
+      <div class="t serif" style="font-size:19px;margin-bottom:8px;">Sua central de estudos está vazia</div>
+      <div class="d">Comece criando uma área de conhecimento (ex: Matemática, Programação, Idiomas) ou já escreva sua primeira anotação. A estrutura é toda sua.</div>
+      <div style="display:flex;gap:10px;justify-content:center;margin-top:18px;">
+        <button class="btn btn-primary" onclick="navigate('conteudos'); setTimeout(openTopicModal,50)">+ Criar área</button>
+        <button class="btn" onclick="openNoteModal()">+ Nova anotação</button>
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="grid" style="grid-template-columns: 1.3fr 1fr; gap:14px; margin-bottom:6px;">
+      <div class="hero-stat">
+        <div class="n">${streak.current}</div>
+        <div class="l">dias seguidos estudando · recorde de ${streak.best}</div>
+      </div>
+      <div class="hero-stat" style="background:linear-gradient(160deg, var(--surface-2), var(--surface));">
+        <div class="n" style="color:var(--teal)">${minutesToHM(totalMin)}</div>
+        <div class="l">tempo total de estudo registrado</div>
+      </div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card"><div class="top"><span class="lbl">Conteúdos</span><span class="ic">📚</span></div><div class="num">${STATE.notes.length}</div><div class="lbl">anotações no total</div></div>
+      <div class="stat-card"><div class="top"><span class="lbl">Metas</span><span class="ic">🎯</span></div><div class="num">${STATE.goals.filter(g=>g.status!=='concluida').length}</div><div class="lbl">${STATE.goals.filter(g=>g.status==='concluida').length} concluídas</div></div>
+      <div class="stat-card"><div class="top"><span class="lbl">Revisões</span><span class="ic">📖</span></div><div class="num" style="color:${dueReviews.length?'var(--red)':'var(--text)'}">${dueReviews.length}</div><div class="lbl">pendentes hoje</div></div>
+      <div class="stat-card"><div class="top"><span class="lbl">Áreas</span><span class="ic">🗂️</span></div><div class="num">${STATE.topics.filter(t=>!t.parentId).length}</div><div class="lbl">${STATE.topics.length} tópicos no total</div></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:1.4fr 1fr;align-items:start;">
+      <div>
+        <div class="section-title">Atividade recente <span class="see-all" onclick="navigate('historico')">ver histórico →</span></div>
+        <div class="card" style="padding:6px 16px;">
+          ${recent.length? recent.map(renderActivityRow).join('') : emptyRow('Nada por aqui ainda.')}
+        </div>
+
+        <div class="section-title" style="margin-top:22px;">Últimos 21 dias</div>
+        <div class="card">${miniHeatmap(21)}</div>
+      </div>
+
+      <div>
+        <div class="section-title">Revisões de hoje <span class="see-all" onclick="navigate('revisoes')">ver todas →</span></div>
+        <div class="card" style="padding:6px 16px; margin-bottom:20px;">
+          ${dueReviews.length? dueReviews.slice(0,4).map(n=>`
+            <div class="list-row">
+              <span style="flex:1;font-size:13px;">${esc(n.title||'Sem título')}</span>
+              <button class="btn btn-sm" onclick="markReviewed('${n.id}')">Revisado</button>
+            </div>`).join('') : emptyRow('Nenhuma revisão pendente 🎉')}
+        </div>
+
+        <div class="section-title">Próximos eventos <span class="see-all" onclick="navigate('eventos')">ver todos →</span></div>
+        <div class="card" style="padding:6px 16px;">
+          ${upcoming.length? upcoming.map(e=>{
+            const days = Math.ceil((new Date(e.date)-new Date(todayISO()))/86400000);
+            return `<div class="list-row"><span style="flex:1;font-size:13px;">${esc(e.title)}</span><span class="pill pill-amber">${days===0?'hoje':'faltam '+days+'d'}</span></div>`;
+          }).join('') : emptyRow('Nenhum evento cadastrado.')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function emptyRow(msg){ return `<div class="list-row" style="color:var(--text-faint);font-size:12.5px;">${msg}</div>`; }
+function renderActivityRow(a){
+  return `<div class="list-row"><span class="ic" style="font-size:14px;">${a.icon}</span><span style="flex:1;font-size:13px;">${esc(a.text)}</span><span style="font-size:11px;color:var(--text-faint);">${fmtDateShort(a.date)}</span></div>`;
+}
+function recentActivity(n){
+  const items = [];
+  STATE.notes.forEach(x=>items.push({date:x.updatedAt||x.createdAt, icon:'📝', text:'Anotação: '+(x.title||'Sem título'), type:'note', id:x.id}));
+  STATE.sessions.forEach(x=>items.push({date:x.date, icon:'⏱️', text:'Sessão de estudo · '+minutesToHM(x.duration||0), type:'session', id:x.id}));
+  STATE.goals.forEach(x=>items.push({date:x.updatedAt||x.createdAt, icon:'🎯', text:'Meta: '+x.title, type:'goal', id:x.id}));
+  STATE.doubts.forEach(x=>items.push({date:x.createdAt, icon:'❓', text:'Dúvida: '+x.question, type:'doubt', id:x.id}));
+  STATE.flashcards.forEach(x=>items.push({date:x.createdAt, icon:'🧠', text:'Flashcard criado', type:'flash', id:x.id}));
+  items.sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+  return items.slice(0,n);
+}
+function miniHeatmap(days){
+  const map = activityByDay();
+  let cells='';
+  for(let i=days-1;i>=0;i--){
+    const d = new Date(); d.setDate(d.getDate()-i);
+    const k = dateKey(d);
+    const v = map[k]||0;
+    let cls='';
+    if(v>=6) cls='act-4'; else if(v>=4) cls='act-3'; else if(v>=2) cls='act-2'; else if(v>=1) cls='act-1';
+    cells += `<div class="cal-day ${cls}" style="aspect-ratio:auto;height:26px;" title="${k}: ${v} pts"></div>`;
+  }
+  return `<div style="display:grid;grid-template-columns:repeat(${days},1fr);gap:4px;">${cells}</div>`;
+}
+
+/* =====================================================================
+   CALENDÁRIO
+===================================================================== */
+let CAL_MONTH = new Date();
+function viewCalendario(){
+  const map = activityByDay();
+  const y = CAL_MONTH.getFullYear(), m = CAL_MONTH.getMonth();
+  const first = new Date(y,m,1);
+  const startDow = first.getDay();
+  const daysInMonth = new Date(y,m+1,0).getDate();
+  const monthLabel = CAL_MONTH.toLocaleDateString('pt-BR',{month:'long', year:'numeric'});
+  let cells = '';
+  for(let i=0;i<startDow;i++) cells += `<div class="cal-day empty"></div>`;
+  for(let d=1; d<=daysInMonth; d++){
+    const iso = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const v = map[iso]||0;
+    let cls=''; if(v>=6) cls='act-4'; else if(v>=4) cls='act-3'; else if(v>=2) cls='act-2'; else if(v>=1) cls='act-1';
+    if(iso===todayISO()) cls+=' today';
+    cells += `<div class="cal-day ${cls}" onclick="SELECTED_DAY='${iso}'; navigate('meudia')"><span class="n">${d}</span>${v?'<span class=\"dot\"></span>':''}</div>`;
+  }
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="icon-btn" onclick="CAL_MONTH.setMonth(CAL_MONTH.getMonth()-1); render()">‹</button>
+        <div class="serif" style="font-size:17px;text-transform:capitalize;min-width:170px;text-align:center;">${monthLabel}</div>
+        <button class="icon-btn" onclick="CAL_MONTH.setMonth(CAL_MONTH.getMonth()+1); render()">›</button>
+      </div>
+      <button class="btn btn-sm" onclick="CAL_MONTH=new Date(); render()">Hoje</button>
+    </div>
+    <div class="card">
+      <div class="cal-grid" style="margin-bottom:6px;">
+        ${['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}
+      </div>
+      <div class="cal-grid">${cells}</div>
+    </div>
+    <div style="display:flex;gap:14px;align-items:center;margin-top:14px;font-size:11.5px;color:var(--text-faint);">
+      <span>Menos</span>
+      <div style="display:flex;gap:4px;">
+        <div class="cal-day" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-1" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-2" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-3" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-4" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+      </div>
+      <span>Mais</span>
+    </div>
+  `;
+}
+
+/* =====================================================================
+   MEU DIA
+===================================================================== */
+function viewMeuDia(){
+  const iso = SELECTED_DAY;
+  const notes = STATE.notes.filter(n=> (n.createdAt||'').slice(0,10)===iso);
+  const sessions = STATE.sessions.filter(s=>s.date===iso);
+  const doubts = STATE.doubts.filter(d=>(d.createdAt||'').slice(0,10)===iso);
+  const goalsUpdated = STATE.goals.filter(g=>(g.updatedAt||'').slice(0,10)===iso);
+  const totalMin = sessions.reduce((a,s)=>a+(s.duration||0),0);
+  const isToday = iso===todayISO();
+
+  return `
+    <div class="day-strip">
+      <button class="icon-btn" onclick="shiftDay(-1)">‹</button>
+      <div>
+        <div class="date-label">${isToday?'Hoje, ':''}${fmtDate(iso)}</div>
+      </div>
+      <button class="icon-btn" onclick="shiftDay(1)">›</button>
+      <input type="date" value="${iso}" onchange="SELECTED_DAY=this.value; render()" style="margin-left:8px;">
+      ${!isToday?`<button class="btn btn-sm" onclick="SELECTED_DAY=todayISO(); render()">Ir para hoje</button>`:''}
+    </div>
+
+    <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat-card"><div class="num">${notes.length}</div><div class="lbl">anotações</div></div>
+      <div class="stat-card"><div class="num">${sessions.length}</div><div class="lbl">sessões de estudo</div></div>
+      <div class="stat-card"><div class="num">${minutesToHM(totalMin)}</div><div class="lbl">tempo estudado</div></div>
+      <div class="stat-card"><div class="num">${doubts.length}</div><div class="lbl">dúvidas registradas</div></div>
+    </div>
+
+    <div class="section-title">Anotações do dia</div>
+    <div class="notes-grid" style="margin-bottom:22px;">
+      ${notes.length? notes.map(renderNoteCard).join('') : `<div class="card"><div class="empty-state" style="padding:20px;">Nenhuma anotação criada neste dia.</div></div>`}
+    </div>
+
+    <div class="grid" style="grid-template-columns:1fr 1fr;">
+      <div>
+        <div class="section-title">Sessões de estudo</div>
+        <div class="card" style="padding:6px 16px;">
+          ${sessions.length? sessions.map(s=>`
+            <div class="list-row">
+              <span style="flex:1;font-size:13px;">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
+              <span class="pill pill-teal">${minutesToHM(s.duration||0)}</span>
+            </div>`).join('') : emptyRow('Nenhuma sessão registrada.')}
+        </div>
+      </div>
+      <div>
+        <div class="section-title">Dúvidas registradas</div>
+        <div class="card" style="padding:6px 16px;">
+          ${doubts.length? doubts.map(d=>`
+            <div class="list-row">
+              <span style="flex:1;font-size:13px;">${esc(d.question)}</span>
+              <span class="pill ${d.status==='resolvida'?'pill-teal':'pill-red'}">${d.status==='resolvida'?'resolvida':'aberta'}</span>
+            </div>`).join('') : emptyRow('Nenhuma dúvida neste dia.')}
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:18px;">
+      <button class="btn btn-primary" onclick="openNoteModal(null,'${iso}')">+ Nova anotação neste dia</button>
+      <button class="btn" onclick="openSessionModal(null,'${iso}')">+ Registrar sessão</button>
+    </div>
+  `;
+}
+function shiftDay(delta){
+  const d = new Date(SELECTED_DAY+'T00:00:00'); d.setDate(d.getDate()+delta);
+  SELECTED_DAY = dateKey(d); render();
+}
+
+/* =====================================================================
+   TÓPICOS / CONTEÚDOS
+===================================================================== */
+function viewConteudos(){
+  const roots = STATE.topics.filter(t=>!t.parentId);
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div class="sub" style="color:var(--text-faint);font-size:12.5px;">Organize seu conhecimento do jeito que fizer sentido para você — sem hierarquia fixa.</div>
+      <button class="btn btn-primary" onclick="openTopicModal()">+ Nova área/tópico</button>
+    </div>
+    ${roots.length===0? `<div class="card"><div class="empty-state"><div class="ic">🗂️</div><div class="t">Nenhuma área criada ainda</div><div class="d">Crie sua primeira área de conhecimento — pode ser uma matéria, um idioma, um projeto, o que você quiser.</div></div></div>` : `
+    <div class="card">
+      <div class="topic-tree">
+        ${roots.map(t=>renderTopicNode(t,0)).join('')}
+      </div>
+    </div>`}
+  `;
+}
+function renderTopicNode(t, depth){
+  const children = STATE.topics.filter(x=>x.parentId===t.id);
+  const noteCount = STATE.notes.filter(n=>n.topicId===t.id).length;
+  const indent = depth*20;
+  let html = `
+    <div class="topic-node color-${t.color||1}" style="margin-left:${indent}px;">
+      <span style="cursor:pointer;flex:1;display:flex;align-items:center;gap:8px;" onclick="navigate('anotacoes'); setTimeout(()=>filterByTopic('${t.id}'),30)">
+        <span class="name">${esc(t.name)}</span>
+        <span class="count">${noteCount} anotações${children.length?' · '+children.length+' subtópicos':''}</span>
+      </span>
+      <div style="width:70px;">
+        <div class="progress-bar"><div style="width:${t.progress||0}%"></div></div>
+      </div>
+      <div class="actions">
+        <button class="icon-btn" title="Adicionar subtópico" onclick="event.stopPropagation();openTopicModal(null,'${t.id}')">+</button>
+        <button class="icon-btn" title="Editar" onclick="event.stopPropagation();openTopicModal('${t.id}')">✎</button>
+        <button class="icon-btn btn-danger" title="Excluir" onclick="event.stopPropagation();deleteTopic('${t.id}')">🗑</button>
+      </div>
+    </div>`;
+  children.forEach(c=> html += renderTopicNode(c, depth+1));
+  return html;
+}
+function openTopicModal(id=null, parentId=null){
+  const editing = id ? STATE.topics.find(t=>t.id===id) : null;
+  const parentOptions = STATE.topics.filter(t=>t.id!==id).map(t=>`<option value="${t.id}" ${((editing&&editing.parentId===t.id)||parentId===t.id)?'selected':''}>${esc(topicPath(t.id))}</option>`).join('');
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar':'Novo'} tópico</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Nome</label><input id="mTopicName" value="${editing?esc(editing.name):''}" placeholder="Ex: Matemática, JavaScript, Inglês..." autofocus></div>
+    <div class="field"><label>Pertence a (opcional)</label><select id="mTopicParent"><option value="">— Nenhum (área raiz) —</option>${parentOptions}</select></div>
+    <div class="field">
+      <label>Cor de identificação</label>
+      <div style="display:flex;gap:8px;">
+        ${[1,2,3,4].map(c=>`<button type="button" class="icon-btn topic-node color-${c}" style="border:1px solid var(--border);" onclick="document.getElementById('mTopicColor').value='${c}'">●</button>`).join('')}
+        <input type="hidden" id="mTopicColor" value="${editing?(editing.color||1):1}">
+      </div>
+    </div>
+    <div class="field"><label>Progresso manual (%)</label><input type="range" id="mTopicProgress" min="0" max="100" value="${editing?(editing.progress||0):0}" oninput="document.getElementById('mTopicProgressVal').textContent=this.value+'%'"> <span id="mTopicProgressVal" style="font-size:12px;color:var(--text-dim);">${editing?(editing.progress||0):0}%</span></div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteTopic('${id}');closeModal()">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveTopic('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveTopic(id){
+  const name = document.getElementById('mTopicName').value.trim();
+  if(!name){ toast('Dê um nome ao tópico'); return; }
+  const parentId = document.getElementById('mTopicParent').value || null;
+  const color = document.getElementById('mTopicColor').value;
+  const progress = document.getElementById('mTopicProgress').value;
+  if(id){
+    const t = STATE.topics.find(x=>x.id===id);
+    Object.assign(t,{name,parentId,color,progress:Number(progress)});
+  } else {
+    STATE.topics.push({id:uid(), name, parentId, color, progress:Number(progress)});
+  }
+  saveState(); closeModal(); render(); toast('Tópico salvo');
+}
+function deleteTopic(id){
+  if(!confirm('Excluir este tópico e todos os subtópicos? As anotações vinculadas não serão apagadas, apenas desvinculadas.')) return;
+  const ids = allDescendantIds(id);
+  STATE.topics = STATE.topics.filter(t=>!ids.includes(t.id));
+  STATE.notes.forEach(n=>{ if(ids.includes(n.topicId)) n.topicId=null; });
+  saveState(); render(); toast('Tópico excluído');
+}
+
+/* =====================================================================
+   ANOTAÇÕES
+===================================================================== */
+let NOTES_FILTER = {topic:null, tag:null, q:''};
+function filterByTopic(id){ NOTES_FILTER.topic=id; render(); }
+function viewAnotacoes(){
+  let notes = STATE.notes.slice().sort((a,b)=>(b.updatedAt||b.createdAt).localeCompare(a.updatedAt||a.createdAt));
+  if(NOTES_FILTER.topic) notes = notes.filter(n=>allDescendantIds(NOTES_FILTER.topic).includes(n.topicId));
+  if(NOTES_FILTER.tag) notes = notes.filter(n=>(n.tags||[]).includes(NOTES_FILTER.tag));
+  if(NOTES_FILTER.q) notes = notes.filter(n=> (n.title+' '+stripHtml(n.html)).toLowerCase().includes(NOTES_FILTER.q.toLowerCase()));
+
+  const allTags = [...new Set(STATE.notes.flatMap(n=>n.tags||[]))];
+
+  return `
+    <div class="filter-bar">
+      <input placeholder="Filtrar por título ou conteúdo..." value="${esc(NOTES_FILTER.q)}" oninput="NOTES_FILTER.q=this.value; renderContentOnly()" style="min-width:220px;">
+      ${NOTES_FILTER.topic?`<span class="filter-chip active">${esc(topicPath(NOTES_FILTER.topic))} <a onclick="NOTES_FILTER.topic=null;render()" style="cursor:pointer;margin-left:4px;">✕</a></span>`:''}
+      ${allTags.slice(0,10).map(t=>`<span class="filter-chip ${NOTES_FILTER.tag===t?'active':''}" onclick="NOTES_FILTER.tag=NOTES_FILTER.tag==='${t}'?null:'${t}';render()">#${esc(t)}</span>`).join('')}
+      <button class="btn btn-primary" style="margin-left:auto;" onclick="openNoteModal()">+ Nova anotação</button>
+    </div>
+    <div id="notesGridWrap">
+      ${notes.length? `<div class="notes-grid">${notes.map(renderNoteCard).join('')}</div>` : `<div class="card"><div class="empty-state"><div class="ic">📝</div><div class="t">Nenhuma anotação encontrada</div><div class="d">Ajuste os filtros ou crie sua primeira anotação.</div></div></div>`}
+    </div>
+  `;
+}
+function renderContentOnly(){
+  const c = document.getElementById('content');
+  const scroll = window.scrollY;
+  c.innerHTML = renderRoute();
+}
+function renderNoteCard(n){
+  const snippet = stripHtml(n.html).slice(0,110);
+  return `
+    <div class="note-card" onclick="openNoteModal('${n.id}')">
+      <div class="head">
+        <span class="title">${esc(n.title||'Sem título')}</span>
+        <span style="font-size:14px;">${n.favorite?'⭐':''}</span>
+      </div>
+      <div class="snippet">${esc(snippet)||'<em>Sem conteúdo</em>'}</div>
+      <div class="meta">
+        ${n.topicId?`<span class="pill pill-amber">${esc(topicPath(n.topicId))}</span>`:''}
+        ${(n.tags||[]).slice(0,3).map(t=>`<span class="tag-chip">#${esc(t)}</span>`).join('')}
+        <span style="margin-left:auto;">${fmtDateShort(n.createdAt)}</span>
+      </div>
+    </div>`;
+}
+function openNoteModal(id=null, forDate=null){
+  const editing = id ? STATE.notes.find(n=>n.id===id) : null;
+  const topicOpts = STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('');
+  const checklist = editing?.checklist || [];
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar anotação':'Nova anotação'}</h2>
+      <div style="display:flex;gap:6px;">
+        <button class="icon-btn" title="Favoritar" onclick="toggleModalFav()"><span id="mNoteFavIc">${editing&&editing.favorite?'⭐':'☆'}</span></button>
+        <button class="icon-btn" onclick="closeModal()">✕</button>
+      </div>
+    </div>
+    <input type="hidden" id="mNoteFav" value="${editing&&editing.favorite?'1':'0'}">
+    <div class="field"><input id="mNoteTitle" placeholder="Título (opcional)" value="${editing?esc(editing.title):''}" style="font-size:16px;font-weight:600;padding:10px 12px;" autofocus></div>
+    <div class="field-row">
+      <div class="field"><label>Área / Tópico</label><select id="mNoteTopic"><option value="">— Nenhum —</option>${topicOpts}</select></div>
+      <div class="field"><label>Prioridade</label><select id="mNotePriority">
+        <option value="normal" ${editing&&editing.priority==='normal'?'selected':''}>Normal</option>
+        <option value="alta" ${editing&&editing.priority==='alta'?'selected':''}>Alta</option>
+        <option value="baixa" ${editing&&editing.priority==='baixa'?'selected':''}>Baixa</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Tags (separadas por vírgula)</label><input id="mNoteTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="revisar, prova, resumo..."></div>
+
+    <div class="field">
+      <label>Conteúdo</label>
+      <div class="editor-toolbar">
+        <button type="button" title="Título" onmousedown="event.preventDefault()" onclick="ed('formatBlock','H2')">H2</button>
+        <button type="button" title="Subtítulo" onmousedown="event.preventDefault()" onclick="ed('formatBlock','H3')">H3</button>
+        <div class="sep"></div>
+        <button type="button" title="Negrito" onmousedown="event.preventDefault()" onclick="ed('bold')"><b>B</b></button>
+        <button type="button" title="Itálico" onmousedown="event.preventDefault()" onclick="ed('italic')"><i>I</i></button>
+        <button type="button" title="Sublinhado" onmousedown="event.preventDefault()" onclick="ed('underline')"><u>U</u></button>
+        <div class="sep"></div>
+        <button type="button" title="Lista" onmousedown="event.preventDefault()" onclick="ed('insertUnorderedList')">•≡</button>
+        <button type="button" title="Lista numerada" onmousedown="event.preventDefault()" onclick="ed('insertOrderedList')">1≡</button>
+        <button type="button" title="Citação" onmousedown="event.preventDefault()" onclick="ed('formatBlock','BLOCKQUOTE')">❝</button>
+        <button type="button" title="Código" onmousedown="event.preventDefault()" onclick="ed('formatBlock','PRE')">&lt;/&gt;</button>
+        <div class="sep"></div>
+        <button type="button" title="Link" onmousedown="event.preventDefault()" onclick="edLink()">🔗</button>
+        <button type="button" title="Imagem (URL)" onmousedown="event.preventDefault()" onclick="edImage()">🖼️</button>
+        <button type="button" title="Separador" onmousedown="event.preventDefault()" onclick="ed('insertHorizontalRule')">―</button>
+        <div class="sep"></div>
+        <button type="button" title="Limpar formatação" onmousedown="event.preventDefault()" onclick="ed('removeFormat')">⨯</button>
+      </div>
+      <div class="editor-body" id="mNoteBody" contenteditable="true" data-placeholder="Comece a escrever...">${editing?editing.html||'':''}</div>
+    </div>
+
+    <div class="field">
+      <label>Checklist</label>
+      <div id="mNoteChecklist">${checklist.map((c,i)=>checklistRowHtml(c,i)).join('')}</div>
+      <button type="button" class="btn btn-sm" style="margin-top:6px;" onclick="addChecklistRow()">+ item</button>
+    </div>
+
+    <div class="field-row">
+      <div class="field" style="display:flex;align-items:center;gap:10px;">
+        <label style="margin:0;">Marcar para revisão</label>
+        <div class="toggle ${editing&&editing.reviewOn?'on':''}" id="mNoteReviewToggle" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteNote('${id}')">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveNote('${id||''}','${forDate||''}')">Salvar anotação</button>
+    </div>
+  `, true);
+}
+function toggleModalFav(){
+  const el = document.getElementById('mNoteFav');
+  el.value = el.value==='1'?'0':'1';
+  document.getElementById('mNoteFavIc').textContent = el.value==='1'?'⭐':'☆';
+}
+function checklistRowHtml(c,i){
+  return `<div class="checklist-row" data-idx="${i}"><input type="checkbox" ${c.done?'checked':''}><input type="text" value="${esc(c.text)}" style="flex:1;background:none;border:none;padding:2px;" placeholder="item"><button type="button" class="icon-btn btn-sm" onclick="this.parentElement.remove()">✕</button></div>`;
+}
+function addChecklistRow(){
+  const wrap = document.getElementById('mNoteChecklist');
+  const div = document.createElement('div');
+  div.innerHTML = checklistRowHtml({text:'',done:false}, wrap.children.length);
+  wrap.appendChild(div.firstElementChild);
+}
+function ed(cmd, val){ document.getElementById('mNoteBody').focus(); document.execCommand(cmd, false, val||null); }
+function edLink(){ const url = prompt('URL do link:'); if(url) ed('createLink', url); }
+function edImage(){ const url = prompt('URL da imagem:'); if(url) ed('insertImage', url); }
+
+function saveNote(id, forDate){
+  const title = document.getElementById('mNoteTitle').value.trim();
+  const html = document.getElementById('mNoteBody').innerHTML;
+  const topicId = document.getElementById('mNoteTopic').value || null;
+  const priority = document.getElementById('mNotePriority').value;
+  const tags = document.getElementById('mNoteTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  const favorite = document.getElementById('mNoteFav').value==='1';
+  const reviewOn = document.getElementById('mNoteReviewToggle').classList.contains('on');
+  const checklist = [...document.querySelectorAll('#mNoteChecklist .checklist-row')].map(row=>({
+    done: row.querySelector('input[type=checkbox]').checked,
+    text: row.querySelector('input[type=text]').value
+  })).filter(c=>c.text.trim());
+
+  if(!title && stripHtml(html).trim()===''){ toast('Escreva algo antes de salvar'); return; }
+
+  const now = new Date().toISOString();
+  if(id){
+    const n = STATE.notes.find(x=>x.id===id);
+    Object.assign(n, {title,html,topicId,priority,tags,favorite,updatedAt:now});
+    if(reviewOn && !n.reviewOn){ n.reviewOn=true; n.interval=0; n.nextReview=todayISO(); }
+    if(!reviewOn) n.reviewOn=false;
+    n.checklist = checklist;
+  } else {
+    STATE.notes.push({
+      id:uid(), title, html, topicId, priority, tags, favorite, checklist,
+      reviewOn, interval:0, nextReview: reviewOn?todayISO():null,
+      createdAt: forDate? forDate+'T'+new Date().toISOString().slice(11) : now,
+      updatedAt: now
+    });
+  }
+  saveState(); closeModal(); render(); toast('Anotação salva');
+}
+function deleteNote(id){
+  if(!confirm('Excluir esta anotação?')) return;
+  STATE.notes = STATE.notes.filter(n=>n.id!==id);
+  saveState(); closeModal(); render(); toast('Anotação excluída');
+}
+
+/* =====================================================================
+   METAS
+===================================================================== */
+function viewMetas(){
+  const goals = STATE.goals.slice().sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn btn-primary" onclick="openGoalModal()">+ Nova meta</button>
+    </div>
+    ${goals.length===0? `<div class="card"><div class="empty-state"><div class="ic">🎯</div><div class="t">Nenhuma meta criada</div><div class="d">Metas ajudam a dar direção aos seus estudos — grandes ou pequenas.</div></div></div>` :
+    `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));">
+      ${goals.map(g=>{
+        const done = (g.checklist||[]).filter(c=>c.done).length;
+        const tot = (g.checklist||[]).length;
+        const pct = tot? Math.round(done/tot*100) : (g.progress||0);
+        const days = g.deadline? Math.ceil((new Date(g.deadline)-new Date(todayISO()))/86400000) : null;
+        return `
+        <div class="card" style="cursor:pointer;" onclick="openGoalModal('${g.id}')">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+            <div style="font-weight:600;font-size:14.5px;">🎯 ${esc(g.title)}</div>
+            <span class="pill ${g.status==='concluida'?'pill-teal':'pill-amber'}">${g.status==='concluida'?'concluída':'em andamento'}</span>
+          </div>
+          ${g.description?`<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:10px;">${esc(g.description)}</div>`:''}
+          <div class="progress-bar" style="margin-bottom:6px;"><div style="width:${pct}%"></div></div>
+          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-faint);">
+            <span>${pct}% concluído</span>
+            ${days!==null? `<span>${days>=0?'faltam '+days+'d':'atrasada'}</span>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`}
+  `;
+}
+function openGoalModal(id=null){
+  const editing = id? STATE.goals.find(g=>g.id===id): null;
+  const topicOpts = STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('');
+  const checklist = editing?.checklist || [];
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar meta':'Nova meta'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Título</label><input id="mGoalTitle" value="${editing?esc(editing.title):''}" placeholder="Ex: Terminar o curso de JavaScript" autofocus></div>
+    <div class="field"><label>Descrição</label><textarea id="mGoalDesc" rows="2" placeholder="Detalhes (opcional)">${editing?esc(editing.description||''):''}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>Prazo</label><input type="date" id="mGoalDeadline" value="${editing?editing.deadline||'':''}"></div>
+      <div class="field"><label>Prioridade</label><select id="mGoalPriority">
+        <option value="normal" ${editing&&editing.priority==='normal'?'selected':''}>Normal</option>
+        <option value="alta" ${editing&&editing.priority==='alta'?'selected':''}>Alta</option>
+        <option value="baixa" ${editing&&editing.priority==='baixa'?'selected':''}>Baixa</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Área relacionada</label><select id="mGoalTopic"><option value="">— Nenhuma —</option>${topicOpts}</select></div>
+    <div class="field"><label>Status</label><select id="mGoalStatus">
+      <option value="andamento" ${!editing||editing.status==='andamento'?'selected':''}>Em andamento</option>
+      <option value="concluida" ${editing&&editing.status==='concluida'?'selected':''}>Concluída</option>
+      <option value="pausada" ${editing&&editing.status==='pausada'?'selected':''}>Pausada</option>
+    </select></div>
+    <div class="field">
+      <label>Etapas (checklist)</label>
+      <div id="mGoalChecklist">${checklist.map((c,i)=>checklistRowHtml(c,i)).join('')}</div>
+      <button type="button" class="btn btn-sm" style="margin-top:6px;" onclick="addGoalChecklistRow()">+ etapa</button>
+    </div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteGoal('${id}')">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveGoal('${id||''}')">Salvar meta</button>
+    </div>
+  `);
+}
+function addGoalChecklistRow(){
+  const wrap = document.getElementById('mGoalChecklist');
+  const div = document.createElement('div');
+  div.innerHTML = checklistRowHtml({text:'',done:false}, wrap.children.length);
+  wrap.appendChild(div.firstElementChild);
+}
+function saveGoal(id){
+  const title = document.getElementById('mGoalTitle').value.trim();
+  if(!title){ toast('Dê um título à meta'); return; }
+  const description = document.getElementById('mGoalDesc').value;
+  const deadline = document.getElementById('mGoalDeadline').value || null;
+  const priority = document.getElementById('mGoalPriority').value;
+  const topicId = document.getElementById('mGoalTopic').value || null;
+  const status = document.getElementById('mGoalStatus').value;
+  const checklist = [...document.querySelectorAll('#mGoalChecklist .checklist-row')].map(row=>({
+    done: row.querySelector('input[type=checkbox]').checked,
+    text: row.querySelector('input[type=text]').value
+  })).filter(c=>c.text.trim());
+  const now = new Date().toISOString();
+  if(id){
+    const g = STATE.goals.find(x=>x.id===id);
+    Object.assign(g,{title,description,deadline,priority,topicId,status,checklist,updatedAt:now});
+  } else {
+    STATE.goals.push({id:uid(),title,description,deadline,priority,topicId,status,checklist,createdAt:now,updatedAt:now});
+  }
+  saveState(); closeModal(); render(); toast('Meta salva');
+}
+function deleteGoal(id){
+  if(!confirm('Excluir esta meta?')) return;
+  STATE.goals = STATE.goals.filter(g=>g.id!==id);
+  saveState(); closeModal(); render(); toast('Meta excluída');
+}
+
+/* =====================================================================
+   REVISÕES
+===================================================================== */
+function getDueReviews(){
+  return STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview<=todayISO());
+}
+function viewRevisoes(){
+  const due = STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview<=todayISO()).sort((a,b)=>a.nextReview.localeCompare(b.nextReview));
+  const upcoming = STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview>todayISO()).sort((a,b)=>a.nextReview.localeCompare(b.nextReview));
+  const overdueCount = due.filter(n=>n.nextReview<todayISO()).length;
+  return `
+    <div class="stat-row" style="grid-template-columns:repeat(3,1fr);">
+      <div class="stat-card"><div class="num" style="color:var(--red)">${overdueCount}</div><div class="lbl">atrasadas</div></div>
+      <div class="stat-card"><div class="num" style="color:var(--amber)">${due.length-overdueCount}</div><div class="lbl">para revisar hoje</div></div>
+      <div class="stat-card"><div class="num">${upcoming.length}</div><div class="lbl">agendadas</div></div>
+    </div>
+    <div class="section-title">📖 Revisões pendentes</div>
+    <div class="card" style="padding:6px 16px; margin-bottom:20px;">
+      ${due.length? due.map(n=>`
+        <div class="list-row">
+          <span class="pill ${n.nextReview<todayISO()?'pill-red':'pill-amber'}">${n.nextReview<todayISO()?'atrasada':'hoje'}</span>
+          <span style="flex:1;font-size:13px;cursor:pointer;" onclick="openNoteModal('${n.id}')">${esc(n.title||'Sem título')}</span>
+          ${n.topicId?`<span class="tag-chip">${esc(topicPath(n.topicId))}</span>`:''}
+          <button class="btn btn-sm" onclick="markReviewed('${n.id}')">✓ Revisado</button>
+        </div>`).join('') : emptyRow('Tudo em dia! 🎉')}
+    </div>
+    <div class="section-title">Próximas revisões</div>
+    <div class="card" style="padding:6px 16px;">
+      ${upcoming.length? upcoming.slice(0,12).map(n=>`
+        <div class="list-row">
+          <span style="flex:1;font-size:13px;">${esc(n.title||'Sem título')}</span>
+          <span style="font-size:11.5px;color:var(--text-faint);">${fmtDateShort(n.nextReview)}</span>
+        </div>`).join('') : emptyRow('Nenhuma revisão futura agendada.')}
+    </div>
+  `;
+}
+function markReviewed(id){
+  const n = STATE.notes.find(x=>x.id===id);
+  if(!n) return;
+  const intervals = STATE.settings.reviewIntervals;
+  n.interval = Math.min((n.interval||0)+1, intervals.length-1);
+  const days = intervals[n.interval];
+  const next = new Date(); next.setDate(next.getDate()+days);
+  n.nextReview = dateKey(next);
+  saveState(); render(); toast('Revisão registrada · próxima em '+days+' dias');
+}
+
+/* =====================================================================
+   SESSÕES / POMODORO
+===================================================================== */
+function viewSessoes(){
+  const sessions = STATE.sessions.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,40);
+  return `
+    <div class="grid" style="grid-template-columns:320px 1fr;align-items:start;">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:12.5px;color:var(--text-faint);margin-bottom:10px;text-transform:none;">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.topicId?' · '+esc(topicPath(TIMER.topicId)):''}</div>
+        <div class="pomodoro-time" id="pomodoroDisplay">${fmtTimer(TIMER.remaining)}</div>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;">
+          <button class="btn btn-primary" onclick="${TIMER.running?'pauseTimer()':'startTimer()'}">${TIMER.running?'⏸ Pausar':'▶ Iniciar'}</button>
+          <button class="btn" onclick="resetTimer()">↺ Zerar</button>
+        </div>
+        <div style="display:flex;gap:6px;justify-content:center;margin-top:14px;">
+          <button class="btn btn-sm" onclick="setPreset(25,5)">25/5</button>
+          <button class="btn btn-sm" onclick="setPreset(50,10)">50/10</button>
+          <button class="btn btn-sm" onclick="customPreset()">Personalizado</button>
+        </div>
+        <div class="field" style="margin-top:16px;text-align:left;">
+          <label>Área desta sessão</label>
+          <select id="timerTopic" onchange="TIMER.topicId=this.value||null">
+            <option value="">— Nenhuma —</option>
+            ${STATE.topics.map(t=>`<option value="${t.id}" ${TIMER.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div class="section-title" style="margin:0;">Sessões registradas</div>
+          <button class="btn btn-primary btn-sm" onclick="openSessionModal()">+ Registrar manualmente</button>
+        </div>
+        <div class="card" style="padding:6px 16px;">
+          ${sessions.length? sessions.map(s=>`
+            <div class="list-row">
+              <span style="font-size:11.5px;color:var(--text-faint);width:64px;">${fmtDateShort(s.date)}</span>
+              <span style="flex:1;font-size:13px;">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
+              <span class="pill pill-teal">${minutesToHM(s.duration||0)}</span>
+              <button class="icon-btn btn-sm" onclick="deleteSession('${s.id}')">🗑</button>
+            </div>`).join('') : emptyRow('Nenhuma sessão registrada ainda.')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function fmtTimer(sec){ const m=Math.floor(sec/60), s=sec%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }
+function refreshTimerDisplay(){ const el=document.getElementById('pomodoroDisplay'); if(el) el.textContent = fmtTimer(TIMER.remaining); }
+function startTimer(){
+  TIMER.running=true;
+  TIMER.intervalId = setInterval(()=>{
+    TIMER.remaining--;
+    if(TIMER.remaining<=0){
+      if(TIMER.mode==='work'){
+        logAutoSession();
+        TIMER.mode='break'; TIMER.remaining=STATE.settings.pomodoro.brk*60;
+        toast('Sessão de foco concluída — hora da pausa!');
+      } else {
+        TIMER.mode='work'; TIMER.remaining=STATE.settings.pomodoro.work*60;
+        toast('Pausa concluída — de volta ao foco!');
+      }
+      if(ROUTE==='sessoes') render();
+    }
+    refreshTimerDisplay();
+  },1000);
+  if(ROUTE==='sessoes') render();
+}
+function logAutoSession(){
+  STATE.sessions.push({id:uid(), topicId:TIMER.topicId, date:todayISO(), duration:STATE.settings.pomodoro.work, observation:'Pomodoro automático', createdAt:new Date().toISOString()});
+  saveState();
+}
+function pauseTimer(){ TIMER.running=false; clearInterval(TIMER.intervalId); render(); }
+function resetTimer(){ clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.mode='work'; TIMER.remaining=STATE.settings.pomodoro.work*60; render(); }
+function setPreset(work,brk){ STATE.settings.pomodoro={work,brk}; resetTimer(); saveState(); }
+function customPreset(){
+  const w = prompt('Minutos de foco:', STATE.settings.pomodoro.work);
+  if(!w) return;
+  const b = prompt('Minutos de pausa:', STATE.settings.pomodoro.brk);
+  setPreset(Number(w)||25, Number(b)||5);
+}
+function openSessionModal(id=null, forDate=null){
+  const editing = id? STATE.sessions.find(s=>s.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar sessão':'Registrar sessão de estudo'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Área / Tópico</label><select id="mSessTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+    <div class="field-row">
+      <div class="field"><label>Data</label><input type="date" id="mSessDate" value="${editing?editing.date:(forDate||todayISO())}"></div>
+      <div class="field"><label>Duração (minutos)</label><input type="number" id="mSessDuration" value="${editing?editing.duration:30}" min="1"></div>
+    </div>
+    <div class="field"><label>Observações</label><textarea id="mSessObs" rows="2">${editing?esc(editing.observation||''):''}</textarea></div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteSession('${id}');closeModal()">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveSession('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveSession(id){
+  const topicId = document.getElementById('mSessTopic').value || null;
+  const date = document.getElementById('mSessDate').value || todayISO();
+  const duration = Number(document.getElementById('mSessDuration').value)||0;
+  const observation = document.getElementById('mSessObs').value;
+  if(id){
+    Object.assign(STATE.sessions.find(s=>s.id===id), {topicId,date,duration,observation});
+  } else {
+    STATE.sessions.push({id:uid(),topicId,date,duration,observation,createdAt:new Date().toISOString()});
+  }
+  saveState(); closeModal(); render(); toast('Sessão salva');
+}
+function deleteSession(id){
+  STATE.sessions = STATE.sessions.filter(s=>s.id!==id);
+  saveState(); render();
+}
+
+/* =====================================================================
+   DÚVIDAS
+===================================================================== */
+function viewDuvidas(){
+  const open = STATE.doubts.filter(d=>d.status!=='resolvida');
+  const closed = STATE.doubts.filter(d=>d.status==='resolvida');
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn btn-primary" onclick="openDoubtModal()">+ Nova dúvida</button>
+    </div>
+    <div class="section-title">🔴 Em aberto (${open.length})</div>
+    <div class="card" style="padding:6px 16px;margin-bottom:20px;">
+      ${open.length? open.map(d=>`
+        <div class="list-row" style="cursor:pointer;" onclick="openDoubtModal('${d.id}')">
+          <span style="flex:1;font-size:13px;">${esc(d.question)}</span>
+          ${d.topicId?`<span class="tag-chip">${esc(topicPath(d.topicId))}</span>`:''}
+        </div>`).join('') : emptyRow('Nenhuma dúvida em aberto.')}
+    </div>
+    <div class="section-title">🟢 Resolvidas (${closed.length})</div>
+    <div class="card" style="padding:6px 16px;">
+      ${closed.length? closed.map(d=>`
+        <div class="list-row" style="cursor:pointer;opacity:.7;" onclick="openDoubtModal('${d.id}')">
+          <span style="flex:1;font-size:13px;">${esc(d.question)}</span>
+        </div>`).join('') : emptyRow('Nenhuma dúvida resolvida ainda.')}
+    </div>
+  `;
+}
+function openDoubtModal(id=null){
+  const editing = id? STATE.doubts.find(d=>d.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar dúvida':'Nova dúvida'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Dúvida</label><textarea id="mDoubtQ" rows="2" placeholder="O que você não entendeu?" autofocus>${editing?esc(editing.question):''}</textarea></div>
+    <div class="field"><label>Área / Tópico</label><select id="mDoubtTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+    <div class="field"><label>Explicação (quando resolver)</label><textarea id="mDoubtExp" rows="3">${editing?esc(editing.explanation||''):''}</textarea></div>
+    <div class="field" style="display:flex;align-items:center;gap:10px;">
+      <label style="margin:0;">Resolvida</label>
+      <div class="toggle ${editing&&editing.status==='resolvida'?'on':''}" id="mDoubtToggle" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
+    </div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteDoubt('${id}');closeModal()">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveDoubt('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveDoubt(id){
+  const question = document.getElementById('mDoubtQ').value.trim();
+  if(!question){ toast('Escreva a dúvida'); return; }
+  const topicId = document.getElementById('mDoubtTopic').value || null;
+  const explanation = document.getElementById('mDoubtExp').value;
+  const status = document.getElementById('mDoubtToggle').classList.contains('on') ? 'resolvida':'aberta';
+  if(id){
+    Object.assign(STATE.doubts.find(d=>d.id===id), {question,topicId,explanation,status});
+  } else {
+    STATE.doubts.push({id:uid(),question,topicId,explanation,status,createdAt:new Date().toISOString()});
+  }
+  saveState(); closeModal(); render(); toast('Dúvida salva');
+}
+function deleteDoubt(id){ STATE.doubts=STATE.doubts.filter(d=>d.id!==id); saveState(); render(); }
+
+/* =====================================================================
+   FLASHCARDS
+===================================================================== */
+let FLASH_INDEX = 0, FLASH_FLIPPED=false, FLASH_TOPIC=null;
+function viewFlashcards(){
+  const pool = FLASH_TOPIC? STATE.flashcards.filter(f=>f.topicId===FLASH_TOPIC) : STATE.flashcards;
+  if(FLASH_INDEX>=pool.length) FLASH_INDEX=0;
+  const current = pool[FLASH_INDEX];
+  return `
+    <div class="filter-bar">
+      <select onchange="FLASH_TOPIC=this.value||null;FLASH_INDEX=0;render()">
+        <option value="">Todas as áreas (${STATE.flashcards.length})</option>
+        ${STATE.topics.map(t=>`<option value="${t.id}" ${FLASH_TOPIC===t.id?'selected':''}>${esc(topicPath(t.id))} (${STATE.flashcards.filter(f=>f.topicId===t.id).length})</option>`).join('')}
+      </select>
+      <button class="btn btn-primary" style="margin-left:auto;" onclick="openFlashcardModal()">+ Novo flashcard</button>
+    </div>
+    ${pool.length===0? `<div class="card"><div class="empty-state"><div class="ic">🧠</div><div class="t">Nenhum flashcard ainda</div><div class="d">Crie flashcards para memorizar conceitos rapidamente.</div></div></div>` : `
+    <div style="margin:10px 0 16px;">
+      <div class="flashcard ${FLASH_FLIPPED?'flipped':''}" onclick="FLASH_FLIPPED=!FLASH_FLIPPED; document.querySelector('.flashcard').classList.toggle('flipped')">
+        <div class="flashcard-inner">
+          <div class="flashcard-face front">${esc(current.front)}</div>
+          <div class="flashcard-face back">${esc(current.back)}</div>
+        </div>
+      </div>
+      <div style="text-align:center;color:var(--text-faint);font-size:12px;margin-top:8px;">Clique no cartão para virar</div>
+      <div style="display:flex;justify-content:center;gap:10px;margin-top:16px;align-items:center;">
+        <button class="icon-btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX-1+${pool.length})%${pool.length};render()">‹</button>
+        <span style="font-size:12.5px;color:var(--text-faint);">${FLASH_INDEX+1} / ${pool.length}</span>
+        <button class="icon-btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX+1)%${pool.length};render()">›</button>
+      </div>
+      <div style="display:flex;justify-content:center;gap:8px;margin-top:12px;">
+        <button class="btn btn-sm" onclick="openFlashcardModal('${current.id}')">✎ Editar</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteFlashcard('${current.id}')">🗑 Excluir</button>
+      </div>
+    </div>
+    <div class="section-title">Todos os cartões</div>
+    <div class="notes-grid">
+      ${pool.map((f,i)=>`<div class="note-card" onclick="FLASH_INDEX=${i};FLASH_FLIPPED=false;render()"><div class="title" style="margin-bottom:6px;">${esc(f.front)}</div><div class="snippet">${esc(f.back)}</div><div class="meta"><span class="pill ${f.difficulty==='dificil'?'pill-red':f.difficulty==='medio'?'pill-amber':'pill-teal'}">${f.difficulty||'fácil'}</span></div></div>`).join('')}
+    </div>`}
+  `;
+}
+function openFlashcardModal(id=null){
+  const editing = id? STATE.flashcards.find(f=>f.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar flashcard':'Novo flashcard'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Frente (pergunta)</label><textarea id="mFlashFront" rows="2" autofocus>${editing?esc(editing.front):''}</textarea></div>
+    <div class="field"><label>Verso (resposta)</label><textarea id="mFlashBack" rows="2">${editing?esc(editing.back):''}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>Área / Tópico</label><select id="mFlashTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+      <div class="field"><label>Dificuldade</label><select id="mFlashDiff">
+        <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
+        <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
+        <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
+      </select></div>
+    </div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteFlashcard('${id}');closeModal()">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveFlashcard('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveFlashcard(id){
+  const front = document.getElementById('mFlashFront').value.trim();
+  const back = document.getElementById('mFlashBack').value.trim();
+  if(!front||!back){ toast('Preencha frente e verso'); return; }
+  const topicId = document.getElementById('mFlashTopic').value || null;
+  const difficulty = document.getElementById('mFlashDiff').value;
+  if(id){
+    Object.assign(STATE.flashcards.find(f=>f.id===id), {front,back,topicId,difficulty});
+  } else {
+    STATE.flashcards.push({id:uid(),front,back,topicId,difficulty,createdAt:new Date().toISOString()});
+  }
+  saveState(); closeModal(); render(); toast('Flashcard salvo');
+}
+function deleteFlashcard(id){ STATE.flashcards=STATE.flashcards.filter(f=>f.id!==id); FLASH_INDEX=0; saveState(); render(); }
+
+/* =====================================================================
+   QUESTÕES
+===================================================================== */
+function viewQuestoes(){
+  const qs = STATE.questions.slice().reverse();
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn btn-primary" onclick="openQuestionModal()">+ Nova questão</button>
+    </div>
+    ${qs.length===0? `<div class="card"><div class="empty-state"><div class="ic">📋</div><div class="t">Nenhuma questão cadastrada</div><div class="d">Monte seu próprio banco de questões para revisar depois.</div></div></div>` : `
+    <div class="card" style="padding:6px 16px;">
+      ${qs.map(q=>`
+        <div class="list-row" style="align-items:flex-start;cursor:pointer;" onclick="openQuestionModal('${q.id}')">
+          <span class="pill ${q.difficulty==='dificil'?'pill-red':q.difficulty==='medio'?'pill-amber':'pill-teal'}">${q.difficulty==='dificil'?'difícil':q.difficulty==='medio'?'médio':'fácil'}</span>
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:500;">${esc(q.question)}</div>
+            ${q.topicId?`<div style="font-size:11px;color:var(--text-faint);margin-top:2px;">${esc(topicPath(q.topicId))}</div>`:''}
+          </div>
+        </div>`).join('')}
+    </div>`}
+  `;
+}
+function openQuestionModal(id=null){
+  const editing = id? STATE.questions.find(q=>q.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar questão':'Nova questão'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Pergunta</label><textarea id="mQQuestion" rows="2" autofocus>${editing?esc(editing.question):''}</textarea></div>
+    <div class="field"><label>Resposta</label><textarea id="mQAnswer" rows="2">${editing?esc(editing.answer):''}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>Área / Tópico</label><select id="mQTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+      <div class="field"><label>Dificuldade</label><select id="mQDiff">
+        <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
+        <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
+        <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Tags</label><input id="mQTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="separadas por vírgula"></div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteQuestion('${id}');closeModal()">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveQuestion('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveQuestion(id){
+  const question = document.getElementById('mQQuestion').value.trim();
+  if(!question){ toast('Escreva a pergunta'); return; }
+  const answer = document.getElementById('mQAnswer').value;
+  const topicId = document.getElementById('mQTopic').value || null;
+  const difficulty = document.getElementById('mQDiff').value;
+  const tags = document.getElementById('mQTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  if(id){
+    Object.assign(STATE.questions.find(q=>q.id===id), {question,answer,topicId,difficulty,tags});
+  } else {
+    STATE.questions.push({id:uid(),question,answer,topicId,difficulty,tags,status:'ativa',createdAt:new Date().toISOString()});
+  }
+  saveState(); closeModal(); render(); toast('Questão salva');
+}
+function deleteQuestion(id){ STATE.questions=STATE.questions.filter(q=>q.id!==id); saveState(); render(); }
+
+/* =====================================================================
+   EVENTOS / PROVAS
+===================================================================== */
+function viewEventos(){
+  const evs = STATE.events.slice().sort((a,b)=>a.date.localeCompare(b.date));
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn btn-primary" onclick="openEventModal()">+ Novo evento</button>
+    </div>
+    ${evs.length===0? `<div class="card"><div class="empty-state"><div class="ic">🔔</div><div class="t">Nenhum evento cadastrado</div><div class="d">Provas, entregas, apresentações — registre aqui para ver a contagem regressiva.</div></div></div>` : `
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+      ${evs.map(e=>{
+        const days = Math.ceil((new Date(e.date)-new Date(todayISO()))/86400000);
+        const past = days<0;
+        return `<div class="card" style="cursor:pointer;${past?'opacity:.55;':''}" onclick="openEventModal('${e.id}')">
+          <div style="font-size:11px;color:var(--text-faint);text-transform:capitalize;">${e.type||'evento'}</div>
+          <div style="font-weight:600;font-size:14.5px;margin:4px 0;">${esc(e.title)}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">${fmtDate(e.date)}</div>
+          <span class="pill ${past?'pill-muted':days<=3?'pill-red':'pill-amber'}">${past?'já passou':days===0?'é hoje':'faltam '+days+' dias'}</span>
+        </div>`;
+      }).join('')}
+    </div>`}
+  `;
+}
+function openEventModal(id=null){
+  const editing = id? STATE.events.find(e=>e.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar evento':'Novo evento'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Título</label><input id="mEvTitle" value="${editing?esc(editing.title):''}" placeholder="Ex: Prova de Matemática" autofocus></div>
+    <div class="field-row">
+      <div class="field"><label>Data</label><input type="date" id="mEvDate" value="${editing?editing.date:''}"></div>
+      <div class="field"><label>Tipo</label><select id="mEvType">
+        <option value="prova" ${!editing||editing.type==='prova'?'selected':''}>Prova</option>
+        <option value="trabalho" ${editing&&editing.type==='trabalho'?'selected':''}>Trabalho</option>
+        <option value="apresentacao" ${editing&&editing.type==='apresentacao'?'selected':''}>Apresentação</option>
+        <option value="prazo" ${editing&&editing.type==='prazo'?'selected':''}>Prazo</option>
+        <option value="outro" ${editing&&editing.type==='outro'?'selected':''}>Outro</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Área relacionada</label><select id="mEvTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteEvent('${id}');closeModal()">Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveEvent('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveEvent(id){
+  const title = document.getElementById('mEvTitle').value.trim();
+  const date = document.getElementById('mEvDate').value;
+  if(!title||!date){ toast('Preencha título e data'); return; }
+  const type = document.getElementById('mEvType').value;
+  const topicId = document.getElementById('mEvTopic').value || null;
+  if(id){
+    Object.assign(STATE.events.find(e=>e.id===id), {title,date,type,topicId});
+  } else {
+    STATE.events.push({id:uid(),title,date,type,topicId});
+  }
+  saveState(); closeModal(); render(); toast('Evento salvo');
+}
+function deleteEvent(id){ STATE.events=STATE.events.filter(e=>e.id!==id); saveState(); render(); }
+
+/* =====================================================================
+   ESTATÍSTICAS
+===================================================================== */
+function viewEstatisticas(){
+  const streak = computeStreak();
+  const totalMin = totalStudyMinutes();
+  const daysStudied = Object.keys(activityByDay()).length;
+  const byArea = {};
+  STATE.sessions.forEach(s=>{
+    const root = s.topicId ? rootTopicOf(s.topicId) : null;
+    const key = root? root.name : 'Sem área';
+    byArea[key] = (byArea[key]||0) + (s.duration||0);
+  });
+  const totalAreaMin = Object.values(byArea).reduce((a,b)=>a+b,0) || 1;
+  const sortedAreas = Object.entries(byArea).sort((a,b)=>b[1]-a[1]);
+
+  return `
+    <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat-card"><div class="num">${minutesToHM(totalMin)}</div><div class="lbl">tempo total estudado</div></div>
+      <div class="stat-card"><div class="num">${daysStudied}</div><div class="lbl">dias com atividade</div></div>
+      <div class="stat-card"><div class="num">${streak.best}</div><div class="lbl">maior sequência</div></div>
+      <div class="stat-card"><div class="num">${STATE.goals.filter(g=>g.status==='concluida').length}</div><div class="lbl">metas concluídas</div></div>
+    </div>
+    <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat-card"><div class="num">${STATE.notes.length}</div><div class="lbl">anotações criadas</div></div>
+      <div class="stat-card"><div class="num">${STATE.notes.filter(n=>n.reviewOn).length? STATE.notes.reduce((a,n)=>a+(n.interval>0?1:0),0):0}</div><div class="lbl">revisões realizadas</div></div>
+      <div class="stat-card"><div class="num">${STATE.flashcards.length}</div><div class="lbl">flashcards</div></div>
+      <div class="stat-card"><div class="num">${STATE.doubts.filter(d=>d.status==='resolvida').length}/${STATE.doubts.length}</div><div class="lbl">dúvidas resolvidas</div></div>
+    </div>
+
+    <div class="section-title">Distribuição do tempo por área</div>
+    <div class="card">
+      ${sortedAreas.length? sortedAreas.map(([name,min])=>{
+        const pct = Math.round(min/totalAreaMin*100);
+        return `<div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;"><span>${esc(name)}</span><span style="color:var(--text-faint);">${pct}% · ${minutesToHM(min)}</span></div>
+          <div class="progress-bar"><div style="width:${pct}%"></div></div>
+        </div>`;
+      }).join('') : `<div class="empty-state" style="padding:20px;">Registre sessões de estudo para ver a distribuição.</div>`}
+    </div>
+
+    <div class="section-title" style="margin-top:20px;">Progresso por tópico raiz</div>
+    <div class="card">
+      ${STATE.topics.filter(t=>!t.parentId).length? STATE.topics.filter(t=>!t.parentId).map(t=>`
+        <div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;"><span>${esc(t.name)}</span><span style="color:var(--text-faint);">${t.progress||0}%</span></div>
+          <div class="progress-bar"><div style="width:${t.progress||0}%"></div></div>
+        </div>`).join('') : `<div class="empty-state" style="padding:20px;">Nenhuma área criada ainda.</div>`}
+    </div>
+  `;
+}
+function rootTopicOf(id){
+  let cur = STATE.topics.find(t=>t.id===id);
+  while(cur && cur.parentId){ cur = STATE.topics.find(t=>t.id===cur.parentId); }
+  return cur;
+}
+
+/* =====================================================================
+   FAVORITOS
+===================================================================== */
+function viewFavoritos(){
+  const favNotes = STATE.notes.filter(n=>n.favorite);
+  return `
+    ${favNotes.length===0? `<div class="card"><div class="empty-state"><div class="ic">⭐</div><div class="t">Nenhum favorito ainda</div><div class="d">Marque anotações importantes com a estrela para encontrá-las rapidamente aqui.</div></div></div>` :
+    `<div class="notes-grid">${favNotes.map(renderNoteCard).join('')}</div>`}
+  `;
+}
+
+/* =====================================================================
+   HISTÓRICO
+===================================================================== */
+let HIST_RANGE = 'semana';
+function viewHistorico(){
+  const items = recentActivity(500);
+  const now = new Date();
+  let cutoff = new Date(0);
+  if(HIST_RANGE==='dia'){ cutoff = new Date(); cutoff.setHours(0,0,0,0); }
+  if(HIST_RANGE==='semana'){ cutoff = new Date(); cutoff.setDate(cutoff.getDate()-7); }
+  if(HIST_RANGE==='mes'){ cutoff = new Date(); cutoff.setMonth(cutoff.getMonth()-1); }
+  if(HIST_RANGE==='ano'){ cutoff = new Date(); cutoff.setFullYear(cutoff.getFullYear()-1); }
+  const filtered = items.filter(i=> new Date(i.date) >= cutoff);
+  const groups = {};
+  filtered.forEach(i=>{ const k=(i.date||'').slice(0,10); (groups[k]=groups[k]||[]).push(i); });
+  const days = Object.keys(groups).sort().reverse();
+
+  return `
+    <div class="filter-bar">
+      ${['dia','semana','mes','ano'].map(r=>`<span class="filter-chip ${HIST_RANGE===r?'active':''}" onclick="HIST_RANGE='${r}';render()">${r==='dia'?'Hoje':r==='semana'?'Última semana':r==='mes'?'Último mês':'Último ano'}</span>`).join('')}
+    </div>
+    ${days.length===0? `<div class="card"><div class="empty-state">Nenhuma atividade neste período.</div></div>` :
+      days.map(d=>`
+        <div class="section-title" style="margin-top:16px;">${fmtDate(d)}</div>
+        <div class="card" style="padding:6px 16px;">${groups[d].map(renderActivityRow).join('')}</div>
+      `).join('')}
+  `;
+}
+
+/* =====================================================================
+   CONFIGURAÇÕES
+===================================================================== */
+function viewConfig(){
+  const s = STATE.settings;
+  return `
+    <div class="card" style="margin-bottom:16px;max-width:560px;">
+      <div class="section-title">Terminologia</div>
+      <div class="field-row">
+        <div class="field"><label>Nome para "área"</label><input id="cfgArea" value="${esc(s.terms.area)}"></div>
+        <div class="field"><label>Nome para "tópico"</label><input id="cfgSub" value="${esc(s.terms.sub)}"></div>
+      </div>
+      <button class="btn btn-sm" onclick="saveTerms()">Salvar</button>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;max-width:560px;">
+      <div class="section-title">Pomodoro padrão</div>
+      <div class="field-row">
+        <div class="field"><label>Foco (min)</label><input type="number" id="cfgWork" value="${s.pomodoro.work}"></div>
+        <div class="field"><label>Pausa (min)</label><input type="number" id="cfgBrk" value="${s.pomodoro.brk}"></div>
+      </div>
+      <button class="btn btn-sm" onclick="savePomodoro()">Salvar</button>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;max-width:560px;">
+      <div class="section-title">Intervalos de revisão espaçada (dias)</div>
+      <div class="field"><input id="cfgIntervals" value="${s.reviewIntervals.join(', ')}"></div>
+      <button class="btn btn-sm" onclick="saveIntervals()">Salvar</button>
+    </div>
+
+    <div class="card" style="max-width:560px;">
+      <div class="section-title">Dados</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn" onclick="exportJSON()">⬇ Exportar backup (JSON)</button>
+        <label class="btn" style="cursor:pointer;">⬆ Importar backup<input type="file" accept=".json" style="display:none;" onchange="importJSON(this.files[0])"></label>
+        <button class="btn btn-danger" onclick="resetAll()">Apagar todos os dados</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-faint);margin-top:10px;">Seus dados ficam salvos automaticamente neste artefato do Claude. Exporte periodicamente para ter uma cópia de segurança.</div>
+    </div>
+  `;
+}
+function saveTerms(){
+  STATE.settings.terms = {area:document.getElementById('cfgArea').value, sub:document.getElementById('cfgSub').value};
+  saveState(); toast('Terminologia salva');
+}
+function savePomodoro(){
+  STATE.settings.pomodoro = {work:Number(document.getElementById('cfgWork').value)||25, brk:Number(document.getElementById('cfgBrk').value)||5};
+  resetTimer(); saveState(); toast('Pomodoro atualizado');
+}
+function saveIntervals(){
+  const arr = document.getElementById('cfgIntervals').value.split(',').map(x=>Number(x.trim())).filter(n=>!isNaN(n)&&n>0);
+  if(arr.length){ STATE.settings.reviewIntervals=arr; saveState(); toast('Intervalos salvos'); }
+}
+function exportJSON(){
+  const blob = new Blob([JSON.stringify(STATE,null,2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='backup-estudos-'+todayISO()+'.json'; a.click();
+  URL.revokeObjectURL(url);
+}
+function importJSON(file){
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const data = JSON.parse(reader.result);
+      if(!confirm('Isso vai substituir todos os dados atuais pelo backup importado. Continuar?')) return;
+      STATE = Object.assign(defaultState(), data);
+      saveState(); render(); toast('Backup importado com sucesso');
+    }catch(e){ toast('Arquivo inválido'); }
+  };
+  reader.readAsText(file);
+}
+function resetAll(){
+  if(!confirm('Isso vai apagar TODOS os seus dados permanentemente. Tem certeza?')) return;
+  if(!confirm('Última confirmação: apagar tudo mesmo?')) return;
+  STATE = defaultState(); saveState(); render(); toast('Dados apagados');
+}
+
+/* =====================================================================
+   BUSCA GLOBAL
+===================================================================== */
+function openSearch(){
+  showModal(`
+    <div class="modal-head"><h2>Busca global</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <input id="searchInput" placeholder="Pesquisar em anotações, tópicos, tags, metas, dúvidas..." style="width:100%;font-size:14px;padding:10px 12px;" oninput="runSearch(this.value)" autofocus>
+    <div class="results" id="searchResults"></div>
+  `, false, 'search-modal');
+  setTimeout(()=>document.getElementById('searchInput').focus(), 50);
+}
+function runSearch(q){
+  const el = document.getElementById('searchResults');
+  if(!q || q.trim().length<1){ el.innerHTML=''; return; }
+  const query = q.toLowerCase();
+  const results = [];
+  STATE.notes.forEach(n=>{ if((n.title+' '+stripHtml(n.html)+' '+(n.tags||[]).join(' ')).toLowerCase().includes(query)) results.push({ic:'📝',t:n.title||'Sem título',s:'Anotação'+(n.topicId?' · '+topicPath(n.topicId):''), action:()=>{closeModal();openNoteModal(n.id);}}); });
+  STATE.topics.forEach(t=>{ if(t.name.toLowerCase().includes(query)) results.push({ic:'📚',t:t.name,s:'Tópico', action:()=>{closeModal();filterByTopic(t.id);navigate('anotacoes');}}); });
+  STATE.goals.forEach(g=>{ if(g.title.toLowerCase().includes(query)) results.push({ic:'🎯',t:g.title,s:'Meta', action:()=>{closeModal();navigate('metas');setTimeout(()=>openGoalModal(g.id),80);}}); });
+  STATE.doubts.forEach(d=>{ if(d.question.toLowerCase().includes(query)) results.push({ic:'❓',t:d.question,s:'Dúvida', action:()=>{closeModal();navigate('duvidas');setTimeout(()=>openDoubtModal(d.id),80);}}); });
+  STATE.questions.forEach(qq=>{ if(qq.question.toLowerCase().includes(query)) results.push({ic:'📋',t:qq.question,s:'Questão', action:()=>{closeModal();navigate('questoes');setTimeout(()=>openQuestionModal(qq.id),80);}}); });
+  STATE.flashcards.forEach(f=>{ if((f.front+' '+f.back).toLowerCase().includes(query)) results.push({ic:'🧠',t:f.front,s:'Flashcard', action:()=>{closeModal();navigate('flashcards');}}); });
+
+  el.innerHTML = results.length? results.slice(0,30).map((r,i)=>`
+    <div class="search-result" onclick="window.__searchActions[${i}]()">
+      <div class="ic">${r.ic}</div>
+      <div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div>
+    </div>`).join('') : `<div class="empty-state" style="padding:24px;">Nada encontrado para "${esc(q)}"</div>`;
+  window.__searchActions = results.slice(0,30).map(r=>r.action);
+}
+
+/* =====================================================================
+   MODAL SYSTEM
+===================================================================== */
+function showModal(innerHtml, wide, extraClass){
+  const overlay = document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.id='activeModalOverlay';
+  overlay.onclick = (e)=>{ if(e.target===overlay) closeModal(); };
+  overlay.innerHTML = `<div class="modal ${wide?'wide':''} ${extraClass||''}">${innerHtml}</div>`;
+  document.body.appendChild(overlay);
+  document.addEventListener('keydown', escCloseHandler);
+}
+function escCloseHandler(e){ if(e.key==='Escape') closeModal(); }
+function closeModal(){
+  const m = document.getElementById('activeModalOverlay');
+  if(m) m.remove();
+  document.removeEventListener('keydown', escCloseHandler);
+}
+
+/* =====================================================================
+   KEYBOARD SHORTCUTS
+===================================================================== */
+document.addEventListener('keydown', (e)=>{
+  if(e.key==='/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName) && !document.getElementById('activeModalOverlay')){
+    e.preventDefault(); openSearch();
+  }
+});
+
+/* =====================================================================
+   INIT
+===================================================================== */
+(function init(){
+  loadState();
+  render();
+})();
+</script>
+</body>
+</html>
