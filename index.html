@@ -14,6 +14,17 @@
 <div id="app"></div>
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* =====================================================================
+   CONFIGURAÇÃO DO SUPABASE — troque pelos valores do SEU projeto
+   (Project Settings → API, no painel do Supabase)
+===================================================================== */
+const SUPABASE_URL = "btyxrzknkygylvnrzsuo";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let CURRENT_USER = null;
+</script>
 <script>
 /* =====================================================================
    PERSISTÊNCIA
@@ -41,27 +52,40 @@ function defaultState(){
 }
 let STATE = defaultState();
 
-function loadState(){
+async function loadState(){
+  if(!CURRENT_USER) return;
   try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw){
-      const parsed = JSON.parse(raw);
-      STATE = Object.assign(defaultState(), parsed);
-      STATE.settings = Object.assign(defaultState().settings, parsed.settings||{});
+    const { data, error } = await sb.from('study_data').select('data').eq('user_id', CURRENT_USER.id).maybeSingle();
+    if(error) throw error;
+    if(data && data.data){
+      STATE = Object.assign(defaultState(), data.data);
+      STATE.settings = Object.assign(defaultState().settings, data.data.settings||{});
+    } else {
+      STATE = defaultState();
     }
   }catch(e){
-    console.error('Erro ao carregar dados salvos', e);
+    console.error('Erro ao carregar dados do Supabase', e);
+    toast('Não foi possível carregar seus dados. Verifique sua conexão.');
   }
 }
 function saveState(){
   clearTimeout(SAVE_TIMER);
-  SAVE_TIMER = setTimeout(()=>{
+  SAVE_TIMER = setTimeout(async ()=>{
+    if(!CURRENT_USER) return;
     try{
       SAVING = true;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(STATE));
-    }catch(e){ console.error('Erro ao salvar', e); }
+      const { error } = await sb.from('study_data').upsert({
+        user_id: CURRENT_USER.id,
+        data: STATE,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id' });
+      if(error) throw error;
+    }catch(e){
+      console.error('Erro ao salvar no Supabase', e);
+      toast('Erro ao salvar — verifique sua conexão.');
+    }
     SAVING = false;
-  }, 350);
+  }, 500);
 }
 
 /* =====================================================================
@@ -182,6 +206,10 @@ function render(){
         <div class="streak-pill">
           <span style="font-size:16px">🔥</span>
           <div><div class="n">${streak.current}</div><div class="l">dias seguidos</div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:6px 8px;">
+          <span style="font-size:11px;color:var(--text-faint);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${CURRENT_USER?esc(CURRENT_USER.email):''}">${CURRENT_USER?esc(CURRENT_USER.email):''}</span>
+          <button class="icon-btn" title="Sair" onclick="logout()">⏻</button>
         </div>
       </div>
     </div>
@@ -1464,9 +1492,110 @@ document.addEventListener('keydown', (e)=>{
 /* =====================================================================
    INIT
 ===================================================================== */
-(function init(){
-  loadState();
+/* =====================================================================
+   AUTENTICAÇÃO
+===================================================================== */
+let AUTH_MODE = 'login'; // 'login' | 'signup'
+let AUTH_MSG = null; // {type:'error'|'success', text}
+
+function renderAuth(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <div class="auth-brand"><div class="dot"></div><span>Central de Estudos</span></div>
+        <div class="auth-tabs">
+          <button class="auth-tab ${AUTH_MODE==='login'?'active':''}" onclick="AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button>
+          <button class="auth-tab ${AUTH_MODE==='signup'?'active':''}" onclick="AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button>
+        </div>
+        ${AUTH_MSG? `<div class="auth-msg ${AUTH_MSG.type}">${esc(AUTH_MSG.text)}</div>` : ''}
+        <form id="authForm" onsubmit="return handleAuthSubmit(event)">
+          <div class="field"><label>E-mail</label><input type="email" id="authEmail" required placeholder="voce@email.com"></div>
+          <div class="field"><label>Senha</label><input type="password" id="authPassword" required minlength="6" placeholder="mínimo 6 caracteres"></div>
+          <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px;" id="authSubmitBtn">${AUTH_MODE==='login'?'Entrar':'Criar conta'}</button>
+        </form>
+        ${AUTH_MODE==='login'? `<div style="text-align:center;margin-top:12px;"><a style="font-size:12px;color:var(--text-faint);cursor:pointer;" onclick="handleForgotPassword()">Esqueci minha senha</a></div>` : ''}
+        <div class="auth-foot">Seus dados ficam privados e isolados — só você tem acesso ao que estuda aqui.</div>
+      </div>
+    </div>
+  `;
+}
+async function handleAuthSubmit(e){
+  e.preventDefault();
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const btn = document.getElementById('authSubmitBtn');
+  btn.disabled = true; btn.textContent = 'Aguarde...';
+  AUTH_MSG = null;
+  try{
+    if(AUTH_MODE==='signup'){
+      const { data, error } = await sb.auth.signUp({ email, password });
+      if(error) throw error;
+      if(data.user && !data.session){
+        AUTH_MSG = {type:'success', text:'Conta criada! Verifique seu e-mail para confirmar antes de entrar.'};
+        AUTH_MODE='login'; renderAuth(); return;
+      }
+    } else {
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if(error) throw error;
+    }
+    // onAuthStateChange cuida do redirecionamento para o app
+  }catch(err){
+    AUTH_MSG = {type:'error', text: translateAuthError(err.message)};
+    renderAuth();
+  }
+  return false;
+}
+async function handleForgotPassword(){
+  const email = document.getElementById('authEmail').value.trim();
+  if(!email){ AUTH_MSG={type:'error',text:'Digite seu e-mail no campo acima primeiro.'}; renderAuth(); return; }
+  try{
+    const { error } = await sb.auth.resetPasswordForEmail(email);
+    if(error) throw error;
+    AUTH_MSG = {type:'success', text:'Enviamos um link de redefinição de senha para o seu e-mail.'};
+  }catch(err){
+    AUTH_MSG = {type:'error', text: translateAuthError(err.message)};
+  }
+  renderAuth();
+}
+function translateAuthError(msg){
+  if(!msg) return 'Ocorreu um erro. Tente novamente.';
+  if(msg.includes('Invalid login credentials')) return 'E-mail ou senha incorretos.';
+  if(msg.includes('User already registered')) return 'Já existe uma conta com este e-mail — tente entrar.';
+  if(msg.includes('Password should be')) return 'A senha precisa ter pelo menos 6 caracteres.';
+  return msg;
+}
+async function logout(){
+  if(!confirm('Sair da sua conta?')) return;
+  await sb.auth.signOut();
+}
+
+/* =====================================================================
+   INIT
+===================================================================== */
+async function bootAuthenticated(user){
+  CURRENT_USER = user;
+  await loadState();
   render();
+}
+(async function init(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(session && session.user){
+    await bootAuthenticated(session.user);
+  } else {
+    renderAuth();
+  }
+  sb.auth.onAuthStateChange(async (event, session)=>{
+    if(event==='SIGNED_IN' && session && (!CURRENT_USER || CURRENT_USER.id!==session.user.id)){
+      await bootAuthenticated(session.user);
+    }
+    if(event==='SIGNED_OUT'){
+      CURRENT_USER = null;
+      STATE = defaultState();
+      AUTH_MODE='login'; AUTH_MSG=null;
+      renderAuth();
+    }
+  });
 })();
 </script>
 </body>
