@@ -22,7 +22,7 @@
   --radius-m:10px;
   --radius-l:16px;
 }
-*{box-sizing:border-box; margin:auto; padding:0;}
+*{box-sizing:border-box; margin:0; padding:0;}
 
 body{
   background:var(--bg); color:var(--text);
@@ -254,7 +254,7 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible{outline:2px soli
 
 /* Auth screen */
 .auth-wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;}
-.auth-card{width:100%; max-width:380px; background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-l); padding:30px 28px;}
+.auth-card{width:100%; max-width:380px; background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-l); padding:30px 28px; }
 .auth-brand{
   display: flex;
   justify-content: center;
