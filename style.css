@@ -22,7 +22,11 @@
   --radius-m:10px;
   --radius-l:16px;
 }
-*{box-sizing:border-box; margin:0; padding:0;}
+*{
+  margin: 0px;
+  padding: 0px;
+  box-sizing: border-box;
+}
 
 body{
   background:var(--bg); color:var(--text);
