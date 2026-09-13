@@ -1529,7 +1529,10 @@ async function handleAuthSubmit(e){
   AUTH_MSG = null;
   try{
     if(AUTH_MODE==='signup'){
-      const { data, error } = await sb.auth.signUp({ email, password });
+      const { data, error } = await sb.auth.signUp({
+        email, password,
+        options: { emailRedirectTo: window.location.origin + window.location.pathname }
+      });
       if(error) throw error;
       if(data.user && !data.session){
         AUTH_MSG = {type:'success', text:'Conta criada! Verifique seu e-mail para confirmar antes de entrar.'};
