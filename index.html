@@ -1138,6 +1138,97 @@ function deleteFlashcard(id){ STATE.flashcards=STATE.flashcards.filter(f=>f.id!=
 ===================================================================== */
 function viewQuestoes(){
   const qs = STATE.questions.slice().reverse();
+
+  return `
+    <div class="questions-header">
+      <div>
+        <div class="section-title" style="margin-bottom:4px;">
+          Banco de questões
+        </div>
+        <div class="questions-subtitle">
+          Revise e organize suas questões de estudo.
+        </div>
+      </div>
+
+      <button class="btn btn-primary" onclick="openQuestionModal()">
+        + Nova questão
+      </button>
+    </div>
+
+    ${
+      qs.length === 0
+      ?
+      `
+        <div class="card">
+          <div class="empty-state">
+            <div class="ic">📋</div>
+            <div class="t">Nenhuma questão cadastrada</div>
+            <div class="d">
+              Monte seu próprio banco de questões para revisar depois.
+            </div>
+          </div>
+        </div>
+      `
+      :
+      `
+        <div class="questions-list">
+
+          ${qs.map(q => `
+            <div 
+              class="question-item"
+              onclick="openQuestionModal('${q.id}')"
+            >
+
+              <div class="question-top">
+
+                <span class="pill ${
+                  q.difficulty === 'dificil'
+                    ? 'pill-red'
+                    : q.difficulty === 'medio'
+                      ? 'pill-amber'
+                      : 'pill-teal'
+                }">
+                  ${
+                    q.difficulty === 'dificil'
+                      ? '🔴 Difícil'
+                      : q.difficulty === 'medio'
+                        ? '🟡 Médio'
+                        : '🟢 Fácil'
+                  }
+                </span>
+
+                <span class="question-arrow">
+                  ›
+                </span>
+
+              </div>
+
+              <div class="question-text">
+                ${esc(q.question)}
+              </div>
+
+              ${
+                q.topicId
+                ?
+                `
+                  <div class="question-topic">
+                    📚 ${esc(topicPath(q.topicId))}
+                  </div>
+                `
+                :
+                ''
+              }
+
+            </div>
+          `).join('')}
+
+        </div>
+      `
+    }
+  `;
+}
+/*function viewQuestoes(){
+  const qs = STATE.questions.slice().reverse();
   return `
     <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
       <button class="btn btn-primary" onclick="openQuestionModal()">+ Nova questão</button>
@@ -1145,7 +1236,7 @@ function viewQuestoes(){
     ${qs.length===0? `<div class="card"><div class="empty-state"><div class="ic">📋</div><div class="t">Nenhuma questão cadastrada</div><div class="d">Monte seu próprio banco de questões para revisar depois.</div></div></div>` : `
     <div class="card" style="padding:6px 16px;">
       ${qs.map(q=>`
-        <div class="list-row" style="align-items:flex-start;cursor:pointer;" onclick="openQuestionModal('${q.id}')">
+        <div class="list-row" style="align-items:flex-start;cursor:pointer; border:0.5px solid lightgray; border-radius:10px;" onclick="openQuestionModal('${q.id}')">
           <span class="pill ${q.difficulty==='dificil'?'pill-red':q.difficulty==='medio'?'pill-amber':'pill-teal'}">${q.difficulty==='dificil'?'difícil':q.difficulty==='medio'?'médio':'fácil'}</span>
           <div style="flex:1;">
             <div style="font-size:13px;font-weight:500;">${esc(q.question)}</div>
@@ -1154,13 +1245,13 @@ function viewQuestoes(){
         </div>`).join('')}
     </div>`}
   `;
-}
+  }*/
 function openQuestionModal(id=null){
   const editing = id? STATE.questions.find(q=>q.id===id): null;
   showModal(`
     <div class="modal-head"><h2>${editing?'Editar questão':'Nova questão'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
-    <div class="field"><label>Pergunta</label><textarea id="mQQuestion" rows="2" autofocus>${editing?esc(editing.question):''}</textarea></div>
-    <div class="field"><label>Resposta</label><textarea id="mQAnswer" rows="2">${editing?esc(editing.answer):''}</textarea></div>
+    <div class="field field-especial"><label>Pergunta</label><textarea id="mQQuestion" rows="10" autofocus>${editing?esc(editing.question):''}</textarea></div>
+    <div class="field field-especial"><label>Resposta</label><textarea id="mQAnswer" rows="10">${editing?esc(editing.answer):''}</textarea></div>
     <div class="field-row">
       <div class="field"><label>Área / Tópico</label><select id="mQTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
       <div class="field"><label>Dificuldade</label><select id="mQDiff">
