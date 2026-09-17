@@ -1227,6 +1227,8 @@ function viewQuestoes(){
     }
   `;
 }
+
+/*CODIGO ORIGINAL DAS QUESTIONS*/
 /*function viewQuestoes(){
   const qs = STATE.questions.slice().reverse();
   return `
@@ -1246,6 +1248,8 @@ function viewQuestoes(){
     </div>`}
   `;
   }*/
+
+
 function openQuestionModal(id=null){
   const editing = id? STATE.questions.find(q=>q.id===id): null;
   showModal(`
