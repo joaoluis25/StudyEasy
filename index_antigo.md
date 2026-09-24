@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!--<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -52,30 +52,21 @@ function defaultState(){
 }
 let STATE = defaultState();
 
-function normalizeState(raw){
-  const base=defaultState(), data=raw&&typeof raw==='object'?raw:{};
-  const arr=k=>Array.isArray(data[k])?data[k]:[];
-  const cleanId=v=>typeof v==='string'&&/^[A-Za-z0-9_-]{1,80}$/.test(v)?v:uid();
-  const cleanDate=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&isValidDateOnly(v)?v:null;
-  const cleanTimestamp=v=>typeof v==='string'&&parseDateSafe(v)?v:null;
-  const checklist=v=>Array.isArray(v)?v.slice(0,100).map(c=>({done:!!c?.done,text:String(c?.text||'').slice(0,500)})).filter(c=>c.text.trim()):[];
-  const topics=arr('topics').slice(0,1000).map(t=>({id:cleanId(t?.id),name:String(t?.name||'').slice(0,200),parentId:typeof t?.parentId==='string'?t.parentId:null,color:Math.max(1,Math.min(20,Number(t?.color)||1)),progress:Math.max(0,Math.min(100,Number(t?.progress)||0))})).filter(t=>t.name.trim());
-  const topicIds=new Set(topics.map(t=>t.id)); topics.forEach(t=>{if(t.parentId===t.id||!topicIds.has(t.parentId))t.parentId=null;});
-  const notes=arr('notes').slice(0,2000).map(n=>({id:cleanId(n?.id),title:String(n?.title||'').slice(0,300),html:sanitizeNoteHtml(String(n?.html||'')),topicId:topicIds.has(n?.topicId)?n.topicId:null,tags:Array.isArray(n?.tags)?n.tags.slice(0,50).map(x=>String(x).slice(0,80)).filter(Boolean):[],checklist:checklist(n?.checklist),priority:['low','normal','high'].includes(n?.priority)?n.priority:'normal',favorite:!!n?.favorite,reviewOn:!!n?.reviewOn,nextReview:cleanDate(n?.nextReview),interval:Math.max(0,Math.min(100,Number(n?.interval)||0)),createdAt:cleanTimestamp(n?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(n?.updatedAt)||cleanTimestamp(n?.createdAt)||new Date().toISOString()}));
-  const goals=arr('goals').slice(0,1000).map(g=>({id:cleanId(g?.id),title:String(g?.title||'').slice(0,300),description:String(g?.description||'').slice(0,2000),deadline:cleanDate(g?.deadline),priority:['low','normal','high'].includes(g?.priority)?g.priority:'normal',topicId:topicIds.has(g?.topicId)?g.topicId:null,status:['aberta','em_andamento','concluida'].includes(g?.status)?g.status:'aberta',checklist:checklist(g?.checklist),progress:Math.max(0,Math.min(100,Number(g?.progress)||0)),createdAt:cleanTimestamp(g?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(g?.updatedAt)||cleanTimestamp(g?.createdAt)||new Date().toISOString()}));
-  const sessions=arr('sessions').slice(0,5000).map(x=>({id:cleanId(x?.id),topicId:topicIds.has(x?.topicId)?x.topicId:null,date:cleanDate(x?.date)||todayISO(),duration:Math.max(0,Math.min(1440,Number(x?.duration)||0)),observation:String(x?.observation||'').slice(0,2000),createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()}));
-  const events=arr('events').slice(0,2000).map(x=>({id:cleanId(x?.id),title:String(x?.title||'').slice(0,300),date:cleanDate(x?.date)||todayISO(),type:String(x?.type||'evento').slice(0,80),topicId:topicIds.has(x?.topicId)?x.topicId:null}));
-  const doubts=arr('doubts').slice(0,2000).map(x=>({id:cleanId(x?.id),question:String(x?.question||'').slice(0,1000),topicId:topicIds.has(x?.topicId)?x.topicId:null,explanation:String(x?.explanation||'').slice(0,3000),status:x?.status==='resolvida'?'resolvida':'aberta',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.question.trim());
-  const flashcards=arr('flashcards').slice(0,5000).map(x=>({id:cleanId(x?.id),front:String(x?.front||'').slice(0,2000),back:String(x?.back||'').slice(0,5000),topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.front.trim()&&x.back.trim());
-  const questions=arr('questions').slice(0,5000).map(x=>({id:cleanId(x?.id),question:String(x?.question||'').slice(0,3000),answer:String(x?.answer||'').slice(0,8000),topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',tags:Array.isArray(x?.tags)?x.tags.slice(0,50).map(v=>String(v).slice(0,80)).filter(Boolean):[],status:x?.status==='inativa'?'inativa':'ativa',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.question.trim());
-  const settings=data.settings&&typeof data.settings==='object'?data.settings:{},terms=settings.terms&&typeof settings.terms==='object'?settings.terms:{},pom=settings.pomodoro&&typeof settings.pomodoro==='object'?settings.pomodoro:{};
-  const intervals=Array.isArray(settings.reviewIntervals)?settings.reviewIntervals.map(Number).filter(Number.isFinite).map(x=>Math.max(1,Math.min(365,x))).slice(0,20):base.settings.reviewIntervals;
-  return {...base,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:Math.max(1,Math.min(180,Number(pom.work)||25)),brk:Math.max(1,Math.min(60,Number(pom.brk)||5))},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
-}
 async function loadState(){
-  if(!CURRENT_USER)return;
-  try{const {data,error}=await sb.from('study_data').select('data').eq('user_id',CURRENT_USER.id).maybeSingle();if(error)throw error;STATE=normalizeState(data?.data);}
-  catch(e){console.error('Erro ao carregar dados do Supabase',e);STATE=defaultState();toast('Não foi possível carregar seus dados. Verifique sua conexão.');}
+  if(!CURRENT_USER) return;
+  try{
+    const { data, error } = await sb.from('study_data').select('data').eq('user_id', CURRENT_USER.id).maybeSingle();
+    if(error) throw error;
+    if(data && data.data){
+      STATE = Object.assign(defaultState(), data.data);
+      STATE.settings = Object.assign(defaultState().settings, data.data.settings||{});
+    } else {
+      STATE = defaultState();
+    }
+  }catch(e){
+    console.error('Erro ao carregar dados do Supabase', e);
+    toast('Não foi possível carregar seus dados. Verifique sua conexão.');
+  }
 }
 function saveState(){
   clearTimeout(SAVE_TIMER);
@@ -100,15 +91,38 @@ function saveState(){
 /* =====================================================================
    HELPERS
 ===================================================================== */
-const uid=()=>window.crypto?.randomUUID?window.crypto.randomUUID():Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-8);
-const todayISO=()=>new Date().toISOString().slice(0,10);
-function parseDateSafe(value){if(value instanceof Date)return isNaN(value.getTime())?null:value;if(value===null||value===undefined)return null;const text=String(value).trim();if(!text)return null;const d=/^\d{4}-\d{2}-\d{2}$/.test(text)?new Date(text+'T00:00:00'):new Date(text);return isNaN(d.getTime())?null:d;}
-function isValidDateOnly(value){return /^\d{4}-\d{2}-\d{2}$/.test(String(value||''))&&!!parseDateSafe(value);}
-function dateKey(value){const d=parseDateSafe(value);return d?d.toISOString().slice(0,10):null;}
-function daysBetween(a,b){const da=parseDateSafe(a),db=parseDateSafe(b);return da&&db?Math.round((da-db)/86400000):null;}
-function fmtDate(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'}):'Data inválida';}
-function fmtDateShort(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Data inválida';}
-function sanitizeNoteHtml(html){const t=document.createElement('template');t.innerHTML=String(html||'');t.content.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link,svg,math,template').forEach(el=>el.remove());const tags=new Set(['B','STRONG','I','EM','U','S','BR','P','DIV','SPAN','UL','OL','LI','BLOCKQUOTE','PRE','CODE','HR','A','IMG','H1','H2','H3','H4','SUB','SUP']);const attrs={A:new Set(['href','target','rel','title']),IMG:new Set(['src','alt','title','width','height'])};const w=document.createTreeWalker(t.content,NodeFilter.SHOW_ELEMENT),nodes=[];while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(el=>{if(!tags.has(el.tagName)){el.replaceWith(...Array.from(el.childNodes));return;}[...el.attributes].forEach(a=>{const n=a.name.toLowerCase();if(n.startsWith('on')||!attrs[el.tagName]?.has(n)){el.removeAttribute(a.name);return;}if(n==='href'||n==='src'){try{const u=new URL(a.value,document.baseURI);if(!['http:','https:','mailto:'].includes(u.protocol))el.removeAttribute(a.name);else el.setAttribute(a.name,u.href);}catch{el.removeAttribute(a.name);}}});if(el.tagName==='A'){el.setAttribute('target','_blank');el.setAttribute('rel','noopener noreferrer nofollow');}});return t.innerHTML;}
+const uid = ()=> Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
+const todayISO = ()=> new Date().toISOString().slice(0,10);
+function fmtDate(iso){
+  if(!iso) return 'Data não definida';
+
+  const d = new Date(
+    iso.length === 10 ? iso + 'T00:00:00' : iso
+  );
+
+  if(isNaN(d.getTime())) return 'Data inválida';
+
+  return d.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+}
+
+function fmtDateShort(iso){
+  if(!iso) return 'Data não definida';
+
+  const d = new Date(
+    iso.length === 10 ? iso + 'T00:00:00' : iso
+  );
+
+  if(isNaN(d.getTime())) return 'Data inválida';
+
+  return d.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: 'short'
+  });
+}
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function stripHtml(html){ const d=document.createElement('div'); d.innerHTML=html||''; return d.textContent||''; }
 function toast(msg){
@@ -130,10 +144,12 @@ function allDescendantIds(id){
   STATE.topics.filter(t=>t.parentId===id).forEach(c=>{ out = out.concat(allDescendantIds(c.id)); });
   return out;
 }
+function dateKey(d){ return d.toISOString().slice(0,10); }
+
 // Aggregate "activity" per day from notes(created/updated), sessions, goals-updates
 function activityByDay(){
   const map = {};
-  const bump=(iso,weight)=>{const k=dateKey(iso);if(!k)return;map[k]=(map[k]||0)+weight;};
+  const bump = (iso, weight)=>{ if(!iso) return; const k = iso.slice(0,10); map[k]=(map[k]||0)+weight; };
   STATE.notes.forEach(n=>{ bump(n.createdAt,2); if(n.updatedAt && n.updatedAt.slice(0,10)!==n.createdAt.slice(0,10)) bump(n.updatedAt,1); });
   STATE.sessions.forEach(s=> bump(s.date, 2));
   STATE.doubts.forEach(d=> bump(d.createdAt,1));
@@ -154,7 +170,7 @@ function computeStreak(){
   let prev=null;
   days.forEach(d=>{
     if(prev){
-      const diff = daysBetween(d,prev);
+      const diff = (new Date(d)-new Date(prev))/86400000;
       run = diff===1 ? run+1 : 1;
     } else run=1;
     best = Math.max(best, run);
@@ -341,7 +357,7 @@ function viewDashboard(){
         <div class="section-title">Próximos eventos <span class="see-all" onclick="navigate('eventos')">ver todos →</span></div>
         <div class="card" style="padding:6px 16px;">
           ${upcoming.length? upcoming.map(e=>{
-            const days = daysBetween(e.date,todayISO());
+            const days = Math.ceil((new Date(e.date)-new Date(todayISO()))/86400000);
             return `<div class="list-row"><span style="flex:1;font-size:13px;">${esc(e.title)}</span><span class="pill pill-amber">${days===0?'hoje':'faltam '+days+'d'}</span></div>`;
           }).join('') : emptyRow('Nenhum evento cadastrado.')}
         </div>
@@ -360,7 +376,7 @@ function recentActivity(n){
   STATE.goals.forEach(x=>items.push({date:x.updatedAt||x.createdAt, icon:'🎯', text:'Meta: '+x.title, type:'goal', id:x.id}));
   STATE.doubts.forEach(x=>items.push({date:x.createdAt, icon:'❓', text:'Dúvida: '+x.question, type:'doubt', id:x.id}));
   STATE.flashcards.forEach(x=>items.push({date:x.createdAt, icon:'🧠', text:'Flashcard criado', type:'flash', id:x.id}));
-  items.sort((a,b)=>{const da=parseDateSafe(a.date),db=parseDateSafe(b.date);return (db?.getTime()||0)-(da?.getTime()||0);});
+  items.sort((a,b)=> (b.date||'').localeCompare(a.date||''));
   return items.slice(0,n);
 }
 function miniHeatmap(days){
@@ -799,7 +815,7 @@ function openNoteModal(id=null, forDate=null){
         <div class="sep"></div>
         <button type="button" title="Limpar formatação" onmousedown="event.preventDefault()" onclick="ed('removeFormat')">⨯</button>
       </div>
-      <div class="editor-body" id="mNoteBody" contenteditable="true" data-placeholder="Comece a escrever...">${editing?sanitizeNoteHtml(editing.html||''):''}</div>
+      <div class="editor-body" id="mNoteBody" contenteditable="true" data-placeholder="Comece a escrever...">${editing?editing.html||'':''}</div>
     </div>
 
     <div class="field">
@@ -842,7 +858,7 @@ function edImage(){ const url = prompt('URL da imagem:'); if(url) ed('insertImag
 
 function saveNote(id, forDate){
   const title = document.getElementById('mNoteTitle').value.trim();
-  const html = sanitizeNoteHtml(document.getElementById('mNoteBody').innerHTML);
+  const html = document.getElementById('mNoteBody').innerHTML;
   const topicId = document.getElementById('mNoteTopic').value || null;
   const priority = document.getElementById('mNotePriority').value;
   const tags = document.getElementById('mNoteTags').value.split(',').map(t=>t.trim()).filter(Boolean);
@@ -866,7 +882,7 @@ function saveNote(id, forDate){
     STATE.notes.push({
       id:uid(), title, html, topicId, priority, tags, favorite, checklist,
       reviewOn, interval:0, nextReview: reviewOn?todayISO():null,
-      createdAt: isValidDateOnly(forDate) ? new Date(forDate+'T12:00:00').toISOString() : now,
+      createdAt: forDate? forDate+'T'+new Date().toISOString().slice(11) : now,
       updatedAt: now
     });
   }
@@ -893,7 +909,7 @@ function viewMetas(){
         const done = (g.checklist||[]).filter(c=>c.done).length;
         const tot = (g.checklist||[]).length;
         const pct = tot? Math.round(done/tot*100) : (g.progress||0);
-        const days = g.deadline ? daysBetween(g.deadline,todayISO()) : null;
+        const days = g.deadline? Math.ceil((new Date(g.deadline)-new Date(todayISO()))/86400000) : null;
         return `
         <div class="card" style="cursor:pointer;" onclick="openGoalModal('${g.id}')">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
@@ -955,7 +971,7 @@ function saveGoal(id){
   const title = document.getElementById('mGoalTitle').value.trim();
   if(!title){ toast('Dê um título à meta'); return; }
   const description = document.getElementById('mGoalDesc').value;
-  const rawDeadline=document.getElementById('mGoalDeadline').value; const deadline=rawDeadline&&isValidDateOnly(rawDeadline)?rawDeadline:null;
+  const deadline = document.getElementById('mGoalDeadline').value || null;
   const priority = document.getElementById('mGoalPriority').value;
   const topicId = document.getElementById('mGoalTopic').value || null;
   const status = document.getElementById('mGoalStatus').value;
@@ -1123,7 +1139,7 @@ function openSessionModal(id=null, forDate=null){
 }
 function saveSession(id){
   const topicId = document.getElementById('mSessTopic').value || null;
-  const rawDate=document.getElementById('mSessDate').value; const date=isValidDateOnly(rawDate)?rawDate:todayISO();
+  const date = document.getElementById('mSessDate').value || todayISO();
   const duration = Number(document.getElementById('mSessDuration').value)||0;
   const observation = document.getElementById('mSessObs').value;
   if(id){
@@ -1874,7 +1890,7 @@ function viewEventos(){
     ${evs.length===0? `<div class="card"><div class="empty-state"><div class="ic">🔔</div><div class="t">Nenhum evento cadastrado</div><div class="d">Provas, entregas, apresentações — registre aqui para ver a contagem regressiva.</div></div></div>` : `
     <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
       ${evs.map(e=>{
-        const days = daysBetween(e.date,todayISO());
+        const days = Math.ceil((new Date(e.date)-new Date(todayISO()))/86400000);
         const past = days<0;
         return `<div class="card" style="cursor:pointer;${past?'opacity:.55;':''}" onclick="openEventModal('${e.id}')">
           <div style="font-size:11px;color:var(--text-faint);text-transform:capitalize;">${e.type||'evento'}</div>
@@ -1912,7 +1928,7 @@ function openEventModal(id=null){
 function saveEvent(id){
   const title = document.getElementById('mEvTitle').value.trim();
   const date = document.getElementById('mEvDate').value;
-  if(!title||!date||!isValidDateOnly(date)){ toast('Preencha um título e uma data válida'); return; }
+  if(!title||!date){ toast('Preencha título e data'); return; }
   const type = document.getElementById('mEvType').value;
   const topicId = document.getElementById('mEvTopic').value || null;
   if(id){
@@ -2004,7 +2020,7 @@ function viewHistorico(){
   if(HIST_RANGE==='semana'){ cutoff = new Date(); cutoff.setDate(cutoff.getDate()-7); }
   if(HIST_RANGE==='mes'){ cutoff = new Date(); cutoff.setMonth(cutoff.getMonth()-1); }
   if(HIST_RANGE==='ano'){ cutoff = new Date(); cutoff.setFullYear(cutoff.getFullYear()-1); }
-  const filtered = items.filter(i=>{const d=parseDateSafe(i.date);return d&&d>=cutoff;});
+  const filtered = items.filter(i=> new Date(i.date) >= cutoff);
   const groups = {};
   filtered.forEach(i=>{ const k=(i.date||'').slice(0,10); (groups[k]=groups[k]||[]).push(i); });
   const days = Object.keys(groups).sort().reverse();
@@ -2271,4 +2287,4 @@ async function bootAuthenticated(user){
 })();
 </script>
 </body>
-</html>
+</html>-->
