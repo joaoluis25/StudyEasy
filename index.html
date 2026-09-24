@@ -94,12 +94,34 @@ function saveState(){
 const uid = ()=> Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
 const todayISO = ()=> new Date().toISOString().slice(0,10);
 function fmtDate(iso){
-  const d = new Date(iso+'T00:00:00');
-  return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'});
+  if(!iso) return 'Data não definida';
+
+  const d = new Date(
+    iso.length === 10 ? iso + 'T00:00:00' : iso
+  );
+
+  if(isNaN(d.getTime())) return 'Data inválida';
+
+  return d.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
 }
+
 function fmtDateShort(iso){
-  const d = new Date(iso+'T00:00:00');
-  return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'});
+  if(!iso) return 'Data não definida';
+
+  const d = new Date(
+    iso.length === 10 ? iso + 'T00:00:00' : iso
+  );
+
+  if(isNaN(d.getTime())) return 'Data inválida';
+
+  return d.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: 'short'
+  });
 }
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function stripHtml(html){ const d=document.createElement('div'); d.innerHTML=html||''; return d.textContent||''; }
@@ -165,6 +187,12 @@ function minutesToHM(m){ const h=Math.floor(m/60), mm=Math.round(m%60); return h
 let ROUTE = 'dashboard';
 let SELECTED_DAY = todayISO();
 let SIDEBAR_OPEN = false;
+/*ATUALIZAÇÃO NA AREA DE QUESTÕES, CODIGO NOVO ADICIONADO ABAIXO*/
+let QUESTION_FILTER = {
+  topicId: null,
+  difficulty: null
+};
+/*--------------------------------------------------------------*/
 let TIMER = { running:false, mode:'work', remaining:25*60, intervalId:null, topicId:null };
 
 const ROUTES = [
@@ -530,13 +558,118 @@ function openTopicModal(id=null, parentId=null){
     <div class="modal-head"><h2>${editing?'Editar':'Novo'} tópico</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
     <div class="field"><label>Nome</label><input id="mTopicName" value="${editing?esc(editing.name):''}" placeholder="Ex: Matemática, JavaScript, Inglês..." autofocus></div>
     <div class="field"><label>Pertence a (opcional)</label><select id="mTopicParent"><option value="">— Nenhum (área raiz) —</option>${parentOptions}</select></div>
-    <div class="field">
-      <label>Cor de identificação</label>
-      <div style="display:flex;gap:8px;">
-        ${[1,2,3,4].map(c=>`<button type="button" class="icon-btn topic-node color-${c}" style="border:1px solid var(--border);" onclick="document.getElementById('mTopicColor').value='${c}'">●</button>`).join('')}
-        <input type="hidden" id="mTopicColor" value="${editing?(editing.color||1):1}">
-      </div>
+
+    <div class="field"> 
+    <label>Cor de identificação</label>
+
+    <div class="topic-color-picker">
+
+        <button
+            type="button"
+            class="topic-color-option color-amber ${!editing || editing.color === 'amber' ? 'selected' : ''}"
+            data-color="amber"
+            onclick="selectTopicColor('amber')"
+            title="Âmbar">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-teal ${editing?.color === 'teal' ? 'selected' : ''}"
+            data-color="teal"
+            onclick="selectTopicColor('teal')"
+            title="Verde">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-violet ${editing?.color === 'violet' ? 'selected' : ''}"
+            data-color="violet"
+            onclick="selectTopicColor('violet')"
+            title="Roxo">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-red ${editing?.color === 'red' ? 'selected' : ''}"
+            data-color="red"
+            onclick="selectTopicColor('red')"
+            title="Vermelho">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-blue ${editing?.color === 'blue' ? 'selected' : ''}"
+            data-color="blue"
+            onclick="selectTopicColor('blue')"
+            title="Azul">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-pink ${editing?.color === 'pink' ? 'selected' : ''}"
+            data-color="pink"
+            onclick="selectTopicColor('pink')"
+            title="Rosa">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-cyan ${editing?.color === 'cyan' ? 'selected' : ''}"
+            data-color="cyan"
+            onclick="selectTopicColor('cyan')"
+            title="Ciano">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-green ${editing?.color === 'green' ? 'selected' : ''}"
+            data-color="green"
+            onclick="selectTopicColor('green')"
+            title="Verde">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-orange ${editing?.color === 'orange' ? 'selected' : ''}"
+            data-color="orange"
+            onclick="selectTopicColor('orange')"
+            title="Laranja">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-white ${editing?.color === 'white' ? 'selected' : ''}"
+            data-color="white"
+            onclick="selectTopicColor('white')"
+            title="Branco">
+            <span></span>
+        </button>
+
+        <input
+            type="color"
+            id="mTopicCustomColor"
+            class="topic-custom-color"
+            value="${editing?.color?.startsWith('#') ? editing.color : '#E8A33D'}"
+            onchange="selectTopicColor(this.value)"
+            title="Escolher outra cor">
+
     </div>
+
+    <input
+        type="hidden"
+        id="mTopicColor"
+        value="${editing ? (editing.color || 'amber') : 'amber'}"
+    >
+</div>
     <div class="field"><label>Progresso manual (%)</label><input type="range" id="mTopicProgress" min="0" max="100" value="${editing?(editing.progress||0):0}" oninput="document.getElementById('mTopicProgressVal').textContent=this.value+'%'"> <span id="mTopicProgressVal" style="font-size:12px;color:var(--text-dim);">${editing?(editing.progress||0):0}%</span></div>
     <div class="modal-actions">
       ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteTopic('${id}');closeModal()">Excluir</button>`:''}
@@ -544,6 +677,31 @@ function openTopicModal(id=null, parentId=null){
       <button class="btn btn-primary" onclick="saveTopic('${id||''}')">Salvar</button>
     </div>
   `);
+}
+
+/*Seletor de Cores na Parte de Conteudos*/
+function selectTopicColor(color){
+
+    const input = document.getElementById('mTopicColor');
+
+    if(!input) return;
+
+    input.value = color;
+
+    document
+        .querySelectorAll('.topic-color-option')
+        .forEach(button => {
+            button.classList.remove('selected');
+        });
+
+    const selected =
+        document.querySelector(
+            `.topic-color-option[data-color="${color}"]`
+        );
+
+    if(selected){
+        selected.classList.add('selected');
+    }
 }
 function saveTopic(id){
   const name = document.getElementById('mTopicName').value.trim();
@@ -1136,96 +1294,528 @@ function deleteFlashcard(id){ STATE.flashcards=STATE.flashcards.filter(f=>f.id!=
 /* =====================================================================
    QUESTÕES
 ===================================================================== */
+// Guarda a matéria e dificuldade atualmente selecionadas
+let QUESTIONS_SCREEN = 'subjects';
+let QUESTIONS_TOPIC_ID = null;
+let QUESTIONS_DIFFICULTY = null;
+
+
+/* ---------------------------------------------------------
+   TELA PRINCIPAL DAS QUESTÕES
+   Mostra as matérias disponíveis
+--------------------------------------------------------- */
 function viewQuestoes(){
-  const qs = STATE.questions.slice().reverse();
 
-  return `
-    <div class="questions-header">
-      <div>
-        <div class="section-title" style="margin-bottom:4px;">
-          Banco de questões
-        </div>
-        <div class="questions-subtitle">
-          Revise e organize suas questões de estudo.
-        </div>
-      </div>
+    // =========================================================
+    // TELA 1 - MATÉRIAS
+    // =========================================================
+    if (QUESTIONS_SCREEN === 'subjects') {
 
-      <button class="btn btn-primary" onclick="openQuestionModal()">
-        + Nova questão
-      </button>
-    </div>
+        const subjects = STATE.topics.filter(t => !t.parentId);
 
-    ${
-      qs.length === 0
-      ?
-      `
-        <div class="card">
-          <div class="empty-state">
-            <div class="ic">📋</div>
-            <div class="t">Nenhuma questão cadastrada</div>
-            <div class="d">
-              Monte seu próprio banco de questões para revisar depois.
+        return `
+            <div class="questions-page-header">
+                <div>
+                    <div class="section-title">
+                        Banco de questões
+                    </div>
+
+                    <div class="questions-subtitle">
+                        Escolha uma matéria para começar sua revisão.
+                    </div>
+                </div>
+
+                <button
+                    class="btn btn-primary"
+                    onclick="openQuestionModal()"
+                >
+                    + Nova questão
+                </button>
             </div>
-          </div>
-        </div>
-      `
-      :
-      `
-        <div class="questions-list">
 
-          ${qs.map(q => `
-            <div 
-              class="question-item"
-              onclick="openQuestionModal('${q.id}')"
-            >
+            ${
+                subjects.length === 0
 
-              <div class="question-top">
+                ? `
+                    <div class="card">
+                        <div class="empty-state">
+                            <div class="ic">📚</div>
+                            <div class="t">
+                                Nenhuma matéria cadastrada
+                            </div>
 
-                <span class="pill ${
-                  q.difficulty === 'dificil'
-                    ? 'pill-red'
-                    : q.difficulty === 'medio'
-                      ? 'pill-amber'
-                      : 'pill-teal'
-                }">
-                  ${
-                    q.difficulty === 'dificil'
-                      ? '🔴 Difícil'
-                      : q.difficulty === 'medio'
-                        ? '🟡 Médio'
-                        : '🟢 Fácil'
-                  }
-                </span>
-
-                <span class="question-arrow">
-                  ›
-                </span>
-
-              </div>
-
-              <div class="question-text">
-                ${esc(q.question)}
-              </div>
-
-              ${
-                q.topicId
-                ?
+                            <div class="d">
+                                Crie uma matéria em Conteúdos para organizar suas questões.
+                            </div>
+                        </div>
+                    </div>
                 `
-                  <div class="question-topic">
-                    📚 ${esc(topicPath(q.topicId))}
-                  </div>
-                `
+
                 :
-                ''
-              }
+
+                `
+                    <div class="questions-subject-list">
+
+                        ${subjects.map(topic => {
+
+                            const topicQuestions =
+                                getQuestionsByTopic(topic.id);
+
+                            const easy =
+                                topicQuestions.filter(q => q.difficulty === 'facil').length;
+
+                            const medium =
+                                topicQuestions.filter(q => q.difficulty === 'medio').length;
+
+                            const hard =
+                                topicQuestions.filter(q => q.difficulty === 'dificil').length;
+
+                            return `
+
+                                <div class="question-subject topic-color-${topic.color || 1}">
+
+                                    <div class="question-subject-info">
+
+                                        <div class="question-subject-name">
+                                            ${esc(topic.name)}
+                                        </div>
+
+                                        <div class="question-difficulty-counts">
+
+                                            <span class="difficulty-count easy">
+                                                <span class="difficulty-dot"></span>
+                                                ${easy}
+                                            </span>
+
+                                            <span class="difficulty-count medium">
+                                                <span class="difficulty-dot"></span>
+                                                ${medium}
+                                            </span>
+
+                                            <span class="difficulty-count hard">
+                                                <span class="difficulty-dot"></span>
+                                                ${hard}
+                                            </span>
+
+                                        </div>
+
+                                    </div>
+
+                                    <button
+                                        class="btn btn-primary question-arrow"
+                                        onclick="openQuestionDifficulties('${topic.id}')"
+                                        title="Ver questões"
+                                    >
+                                        →
+                                    </button>
+
+                                </div>
+
+                            `;
+
+                        }).join('')}
+
+                    </div>
+                `
+            }
+        `;
+    }
+
+
+    // =========================================================
+    // TELA 2 - DIFICULDADES
+    // =========================================================
+
+    if (QUESTIONS_SCREEN === 'difficulties') {
+
+        const topic =
+            STATE.topics.find(t => t.id === QUESTIONS_TOPIC_ID);
+
+        if (!topic) {
+            QUESTIONS_SCREEN = 'subjects';
+            return viewQuestoes();
+        }
+
+        const questions =
+            getQuestionsByTopic(topic.id);
+
+        const easy =
+            questions.filter(q => q.difficulty === 'facil').length;
+
+        const medium =
+            questions.filter(q => q.difficulty === 'medio').length;
+
+        const hard =
+            questions.filter(q => q.difficulty === 'dificil').length;
+
+
+        return `
+
+            <div class="questions-page-header">
+
+                <div>
+
+                    <button
+                        class="btn btn-primary question-back"
+                        onclick="backToQuestionSubjects()"
+                    >
+                        ←
+                    </button>
+
+                    <div class="question-breadcrumb">
+                        ${esc(topic.name)}
+                    </div>
+
+                    <div class="questions-subtitle">
+                        Escolha o nível de dificuldade.
+                    </div>
+
+                </div>
+
+                <button
+                    class="btn btn-primary"
+                    onclick="openQuestionModal()"
+                >
+                    + Nova questão
+                </button>
 
             </div>
-          `).join('')}
 
-        </div>
-      `
+
+            <div class="question-difficulty-list">
+
+                <div class="question-difficulty easy-border">
+
+                    <div>
+
+                        <div class="question-difficulty-title">
+                            Fácil
+                        </div>
+
+                        <div class="question-difficulty-description">
+                            Questões para revisar conceitos básicos.
+                        </div>
+
+                        <div class="question-total">
+                            ${easy} ${easy === 1 ? 'questão' : 'questões'}
+                        </div>
+
+                    </div>
+
+                    <button
+                        class="btn btn-primary question-arrow"
+                        onclick="openQuestionList('${topic.id}', 'facil')"
+                    >
+                        →
+                    </button>
+
+                </div>
+
+
+                <div class="question-difficulty medium-border">
+
+                    <div>
+
+                        <div class="question-difficulty-title">
+                            Médio
+                        </div>
+
+                        <div class="question-difficulty-description">
+                            Questões que exigem maior atenção e raciocínio.
+                        </div>
+
+                        <div class="question-total">
+                            ${medium} ${medium === 1 ? 'questão' : 'questões'}
+                        </div>
+
+                    </div>
+
+                    <button
+                        class="btn btn-primary question-arrow"
+                        onclick="openQuestionList('${topic.id}', 'medio')"
+                    >
+                        →
+                    </button>
+
+                </div>
+
+
+                <div class="question-difficulty hard-border">
+
+                    <div>
+
+                        <div class="question-difficulty-title">
+                            Difícil
+                        </div>
+
+                        <div class="question-difficulty-description">
+                            Questões que exigem maior domínio do conteúdo.
+                        </div>
+
+                        <div class="question-total">
+                            ${hard} ${hard === 1 ? 'questão' : 'questões'}
+                        </div>
+
+                    </div>
+
+                    <button
+                        class="btn btn-primary question-arrow"
+                        onclick="openQuestionList('${topic.id}', 'dificil')"
+                    >
+                        →
+                    </button>
+
+                </div>
+
+            </div>
+        `;
     }
-  `;
+
+
+    // =========================================================
+    // TELA 3 - QUESTÕES
+    // =========================================================
+
+    if (QUESTIONS_SCREEN === 'questions') {
+
+        const topic =
+            STATE.topics.find(t => t.id === QUESTIONS_TOPIC_ID);
+
+        const difficulty =
+            QUESTIONS_DIFFICULTY;
+
+        if (!topic) {
+            QUESTIONS_SCREEN = 'subjects';
+            return viewQuestoes();
+        }
+
+        const questions =
+            getQuestionsByTopic(topic.id)
+                .filter(q => q.difficulty === difficulty)
+                .reverse();
+
+
+        const difficultyName =
+            difficulty === 'facil'
+                ? 'Fácil'
+                : difficulty === 'medio'
+                    ? 'Médio'
+                    : 'Difícil';
+
+
+        return `
+
+            <div class="questions-page-header">
+
+                <div>
+
+                    <button
+                        class="btn btn-primary question-back"
+                        onclick="backToQuestionDifficulties()"
+                    >
+                        ←
+                    </button>
+
+                    <div class="question-breadcrumb">
+                        ${esc(topic.name)} · ${difficultyName}
+                    </div>
+
+                    <div class="questions-subtitle">
+                        ${questions.length}
+                        ${questions.length === 1 ? 'questão cadastrada' : 'questões cadastradas'}
+                    </div>
+
+                </div>
+
+                <button
+                    class="btn btn-primary"
+                    onclick="openQuestionModal()"
+                >
+                    + Nova questão
+                </button>
+
+            </div>
+
+
+            ${
+                questions.length === 0
+
+                ? `
+
+                    <div class="card">
+                        <div class="empty-state">
+
+                            <div class="ic">📋</div>
+
+                            <div class="t">
+                                Nenhuma questão encontrada
+                            </div>
+
+                            <div class="d">
+                                Ainda não existem questões com essa dificuldade nesta matéria.
+                            </div>
+
+                        </div>
+                    </div>
+
+                `
+
+                :
+
+                `
+
+                    <div class="questions-list">
+
+                        ${questions.map(q => `
+
+                            <div class="question-card">
+
+                                <div class="question-card-top">
+
+                                    <span class="
+                                        pill
+                                        ${q.difficulty === 'dificil'
+                                            ? 'pill-red'
+                                            : q.difficulty === 'medio'
+                                                ? 'pill-amber'
+                                                : 'pill-teal'}
+                                    ">
+                                        ${difficultyName}
+                                    </span>
+
+                                    ${
+                                        q.tags && q.tags.length
+
+                                        ? `
+                                            <div class="question-tags">
+                                                ${q.tags.map(tag => `
+                                                    <span class="tag-chip">
+                                                        ${esc(tag)}
+                                                    </span>
+                                                `).join('')}
+                                            </div>
+                                        `
+
+                                        : ''
+                                    }
+
+                                </div>
+
+
+                                <div class="question-card-text">
+                                    ${esc(q.question)}
+                                </div>
+
+
+                                ${
+                                    q.answer
+
+                                    ? `
+                                        <div class="question-answer-preview">
+                                            Resposta cadastrada
+                                        </div>
+                                    `
+
+                                    : ''
+                                }
+
+
+                                ${
+                                    q.topicId
+
+                                    ? `
+                                        <div class="question-card-topic">
+                                            📚 ${esc(topicPath(q.topicId))}
+                                        </div>
+                                    `
+
+                                    : ''
+                                }
+
+
+                                <button
+                                    class="btn btn-primary question-card-arrow"
+                                    onclick="event.stopPropagation(); openQuestionModal('${q.id}')"
+                                    title="Abrir questão"
+                                >
+                                    →
+                                </button>
+
+                            </div>
+
+                        `).join('')}
+
+                    </div>
+
+                `
+            }
+
+        `;
+    }
+}
+
+function getQuestionsByTopic(topicId) {
+
+    const topicIds = [topicId];
+
+    function addChildren(parentId) {
+
+        const children =
+            STATE.topics.filter(t => t.parentId === parentId);
+
+        children.forEach(child => {
+
+            topicIds.push(child.id);
+
+            addChildren(child.id);
+
+        });
+    }
+
+    addChildren(topicId);
+
+    return STATE.questions.filter(q =>
+        q.topicId && topicIds.includes(q.topicId)
+    );
+}
+
+
+function openQuestionDifficulties(topicId) {
+
+    QUESTIONS_TOPIC_ID = topicId;
+    QUESTIONS_DIFFICULTY = null;
+    QUESTIONS_SCREEN = 'difficulties';
+
+    render();
+}
+
+
+function openQuestionList(topicId, difficulty) {
+
+    QUESTIONS_TOPIC_ID = topicId;
+    QUESTIONS_DIFFICULTY = difficulty;
+    QUESTIONS_SCREEN = 'questions';
+
+    render();
+}
+
+
+function backToQuestionSubjects() {
+
+    QUESTIONS_SCREEN = 'subjects';
+    QUESTIONS_TOPIC_ID = null;
+    QUESTIONS_DIFFICULTY = null;
+
+    render();
+}
+
+
+function backToQuestionDifficulties() {
+
+    QUESTIONS_SCREEN = 'difficulties';
+    QUESTIONS_DIFFICULTY = null;
+
+    render();
 }
 
 /*CODIGO ORIGINAL DAS QUESTIONS*/
