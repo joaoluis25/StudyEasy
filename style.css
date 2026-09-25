@@ -115,7 +115,7 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible{outline:2px soli
 .section-title .see-all:hover{color:var(--amber);}
  
 .pill{display:inline-flex; align-items:center; padding:2px 9px; border-radius:20px; font-size:12px; font-weight:500; gap:4px;}
-.pill-amber{background:rgba(232, 164, 61, 0.432); color:white; border-color: #d1d5db;}
+.pill-amber{background:rgba(232, 164, 61, 0.432); color:white; border-color: #d1d5db;text-align: center;}
 .pill-teal{background:rgba(92, 221, 202, 0.616); color:white; border-color: #d1d5db;}
 .pill-paused{background: #e5e7; color: white; border-color: #d1d5db;}
 .pill-red{background:var(--red-soft); color:var(--red);}
