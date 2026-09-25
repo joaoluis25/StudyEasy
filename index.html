@@ -2197,7 +2197,7 @@ function renderAuth(){
           <div class="field"><label>Senha</label><input type="password" id="authPassword" required minlength="6" placeholder="mínimo 6 caracteres"></div>
           <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px;" id="authSubmitBtn">${AUTH_MODE==='login'?'Entrar':'Criar conta'}</button>
         </form>
-        ${AUTH_MODE==='login'? `<div style="text-align:center;margin-top:12px;"><a style="font-size:12px;color:var(--text-faint);cursor:pointer;" onclick="handleForgotPassword()">Esqueci minha senha</a></div>` : ''}
+        ${AUTH_MODE==='login'? `<div style="text-align:center;margin-top:12px;"><a class="es_key" onclick="handleForgotPassword()">Esqueci minha senha</a></div>` : ''}
         <div class="auth-foot">Seus dados ficam privados e isolados — só você tem acesso ao que estuda aqui.</div>
       </div>
     </div>
