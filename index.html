@@ -1165,6 +1165,14 @@ function refreshTimerDisplay(){
   const bar=document.getElementById('timerProgressBar');
   if(bar){ const total=Math.max(1,(TIMER.mode==='work'?TIMER.currentWorkMinutes:TIMER.currentBreakMinutes)*60); bar.style.width=Math.max(0,Math.min(100,(TIMER.remaining/total)*100))+'%'; }
 }
+function toggleSidebarTimer(event){
+  if(event){
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if(TIMER.running) pauseTimer();
+  else startTimer();
+}
 function getPresetById(id){ return STATE.settings.pomodoro.presets.find(x=>x.id===id)||STATE.settings.pomodoro.presets[0]; }
 function getCycleById(id){ return STATE.settings.pomodoro.cycles.find(x=>x.id===id)||STATE.settings.pomodoro.cycles[0]; }
 function selectTimerPreset(id){
