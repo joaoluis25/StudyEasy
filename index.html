@@ -2187,7 +2187,6 @@ function questionRichEditor(id,value,placeholder){
     ${questionEditorToolbar(id)}
     <input id="${id}ImageInput" class="question-editor-image-input" type="file" accept="image/*" capture="environment" multiple onchange="questionEditorHandleImageInput('${id}',this)">
     <div class="editor-body question-editor-body" id="${id}" contenteditable="true" spellcheck="true" data-placeholder="${placeholder}" onfocus="questionEditorRemember('${id}')" onmouseup="questionEditorRemember('${id}')" onkeyup="questionEditorRemember('${id}')" oninput="questionEditorRemember('${id}')" onpaste="questionEditorPaste(event,'${id}')" ondragover="questionEditorDragOver(event,'${id}')" ondragleave="questionEditorDragLeave('${id}')" ondrop="questionEditorDrop(event,'${id}')">${value||''}</div>
-    <div class="question-editor-hint">Você pode colar ou arrastar uma imagem para aqui. No celular, o botão 🖼️ também pode abrir a câmera.</div>
   </div>`;
 }
 
@@ -2195,30 +2194,79 @@ function openQuestionModal(id=null){
   const editing=id?STATE.questions.find(q=>q.id===id):null;
   QUESTION_EDITOR_RANGES={};QUESTION_EDITOR_ACTIVE=null;
   showModal(`
-    <div class="modal-head"><h2>${editing?'Editar questão':'Nova questão'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
-    <div class="field field-especial">
-      <label>Questão</label>
+    <div class="question-modal-head">
+      <div>
+        <div class="question-modal-kicker">${editing?'EDITAR QUESTÃO':'NOVA QUESTÃO'}</div>
+        <h2>${editing?'Editar questão':'Criar questão'}</h2>
+        <p>Monte o enunciado e o gabarito com texto formatado, imagens e links.</p>
+      </div>
+      <button class="icon-btn question-modal-close" onclick="closeModal()" aria-label="Fechar">✕</button>
+    </div>
+
+    <section class="question-form-section question-content-section">
+      <div class="question-section-head">
+        <div>
+          <span class="question-section-icon">❓</span>
+          <div>
+            <h3>Questão</h3>
+            <p>Enunciado, alternativas, imagens ou informações de apoio.</p>
+          </div>
+        </div>
+        <span class="question-section-tag">Enunciado</span>
+      </div>
       ${questionRichEditor('mQQuestionEditor',questionEditorValue(editing,'question'),'Digite o enunciado da questão...')}
-    </div>
-    <div class="field field-especial">
-      <label>Resposta / Gabarito</label>
+    </section>
+
+    <section class="question-form-section question-content-section">
+      <div class="question-section-head">
+        <div>
+          <span class="question-section-icon answer">✓</span>
+          <div>
+            <h3>Resposta / Gabarito</h3>
+            <p>Explique a resposta com o nível de detalhe necessário para sua revisão.</p>
+          </div>
+        </div>
+        <span class="question-section-tag answer">Gabarito</span>
+      </div>
       ${questionRichEditor('mQAnswerEditor',questionEditorValue(editing,'answer'),'Digite a resposta, explicação ou gabarito...')}
-    </div>
-    <div class="field-row">
-      <div class="field"><label>Área / Tópico</label><select id="mQTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
-      <div class="field"><label>Dificuldade</label><select id="mQDiff">
-        <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
-        <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
-        <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
-      </select></div>
-    </div>
-    <div class="field"><label>Tags</label><input id="mQTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="separadas por vírgula"></div>
-    <div class="modal-actions">
+    </section>
+
+    <section class="question-form-section question-meta-section">
+      <div class="question-section-head compact">
+        <div>
+          <span class="question-section-icon meta">⚙</span>
+          <div>
+            <h3>Classificação</h3>
+            <p>Organize a questão para encontrar e revisar depois.</p>
+          </div>
+        </div>
+      </div>
+      <div class="question-meta-grid">
+        <div class="field question-meta-field">
+          <label>Área / Tópico</label>
+          <select id="mQTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select>
+        </div>
+        <div class="field question-meta-field">
+          <label>Dificuldade</label>
+          <select id="mQDiff">
+            <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
+            <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
+            <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
+          </select>
+        </div>
+      </div>
+      <div class="field question-tags-field">
+        <label>Tags</label>
+        <input id="mQTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="Ex.: fisiologia, anatomia, prova 1">
+      </div>
+    </section>
+
+    <div class="modal-actions question-modal-actions">
       ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteQuestion('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveQuestion('${id||''}')">Salvar questão</button>
     </div>
-  `);
+  `, true, 'question-modal');
 }
 function saveQuestion(id){
   const questionHtml=sanitizeNoteHtml(document.getElementById('mQQuestionEditor').innerHTML);
