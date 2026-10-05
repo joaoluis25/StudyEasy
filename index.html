@@ -45,7 +45,16 @@ function defaultState(){
     flashcards: [],
     settings: {
       terms:{area:'Área', sub:'Tópico'},
-      pomodoro:{work:25, brk:5},
+      pomodoro:{
+        work:25, brk:5,
+        presets:[
+          {id:'p25',name:'Clássico',work:25,brk:5},
+          {id:'p50',name:'Foco profundo',work:50,brk:10}
+        ],
+        cycles:[
+          {id:'c60x4',name:'4 × 60/10',repeats:4,steps:[{work:60,brk:10}]}
+        ]
+      },
       reviewIntervals:[1,3,7,16,35]
     }
   };
@@ -70,7 +79,22 @@ function normalizeState(raw){
   const questions=arr('questions').slice(0,5000).map(x=>({id:cleanId(x?.id),question:String(x?.question||'').slice(0,3000),answer:String(x?.answer||'').slice(0,8000),topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',tags:Array.isArray(x?.tags)?x.tags.slice(0,50).map(v=>String(v).slice(0,80)).filter(Boolean):[],status:x?.status==='inativa'?'inativa':'ativa',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.question.trim());
   const settings=data.settings&&typeof data.settings==='object'?data.settings:{},terms=settings.terms&&typeof settings.terms==='object'?settings.terms:{},pom=settings.pomodoro&&typeof settings.pomodoro==='object'?settings.pomodoro:{};
   const intervals=Array.isArray(settings.reviewIntervals)?settings.reviewIntervals.map(Number).filter(Number.isFinite).map(x=>Math.max(1,Math.min(365,x))).slice(0,20):base.settings.reviewIntervals;
-  return {...base,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:Math.max(1,Math.min(180,Number(pom.work)||25)),brk:Math.max(1,Math.min(60,Number(pom.brk)||5))},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
+  const fallbackPresets=base.settings.pomodoro.presets;
+  const presets=Array.isArray(pom.presets)?pom.presets.slice(0,30).map((p,i)=>({
+    id:typeof p?.id==='string'&&p.id?p.id:uid(),
+    name:String(p?.name||`Timer ${i+1}`).slice(0,50),
+    work:Math.max(1,Math.min(180,Number(p?.work)||25)),
+    brk:Math.max(0,Math.min(60,Number(p?.brk)||5))
+  })).filter(p=>p.name.trim()):fallbackPresets;
+  const cycles=Array.isArray(pom.cycles)?pom.cycles.slice(0,20).map((c,i)=>({
+    id:typeof c?.id==='string'&&c.id?c.id:uid(),
+    name:String(c?.name||`Ciclo ${i+1}`).slice(0,60),
+    repeats:Math.max(1,Math.min(20,Number(c?.repeats)||1)),
+    steps:Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:Math.max(1,Math.min(180,Number(st?.work)||25)),brk:Math.max(0,Math.min(60,Number(st?.brk)||5))})).filter(st=>st.work>0):[]
+  })).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
+  const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
+  const legacyBrk=Math.max(0,Math.min(60,Number(pom.brk)||5));
+  return {...base,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
 }
 async function loadState(){
   if(!CURRENT_USER)return;
@@ -177,7 +201,11 @@ let QUESTION_FILTER = {
   difficulty: null
 };
 /*--------------------------------------------------------------*/
-let TIMER = { running:false, mode:'work', remaining:25*60, intervalId:null, topicId:null };
+let TIMER = {
+  running:false, mode:'work', remaining:25*60, intervalId:null, topicId:null,
+  planType:'preset', presetId:'p25', cycleId:null, cycleSteps:[], cycleRepeats:1,
+  cycleStepIndex:0, cycleRound:1, currentWorkMinutes:25, currentBreakMinutes:5
+};
 
 const ROUTES = [
   {id:'dashboard', label:'Dashboard', ic:'🏠'},
@@ -215,6 +243,11 @@ function render(){
         ${ROUTES.map(r=>`<button class="nav-item ${ROUTE===r.id?'active':''}" onclick="navigate('${r.id}')"><span class="ic">${r.ic}</span>${r.label}</button>`).join('')}
       </div>
       <div class="sidebar-foot">
+        <div class="sidebar-timer" onclick="navigate('sessoes')" title="Abrir sessões e controlar o timer">
+          <div class="sidebar-timer-top"><span>⏱️ Timer</span><span id="globalTimerStatus">${TIMER.running?'Em andamento':'Pronto'}</span></div>
+          <div class="sidebar-timer-time" id="globalTimerDisplay">${fmtTimer(TIMER.remaining)}</div>
+          <div class="sidebar-timer-mode">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.planType==='cycle'?' · Ciclo':''}</div>
+        </div>
         <div class="streak-pill">
           <span style="font-size:16px">🔥</span>
           <div><div class="n">${streak.current}</div><div class="l">dias seguidos</div></div>
@@ -1044,21 +1077,28 @@ function markReviewed(id){
 ===================================================================== */
 function viewSessoes(){
   const sessions = STATE.sessions.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,40);
+  const p=STATE.settings.pomodoro;
+  const activeLabel=TIMER.planType==='cycle'
+    ? `${TIMER.cycleId?esc((p.cycles.find(c=>c.id===TIMER.cycleId)||{}).name||'Ciclo'): 'Ciclo'} · ${TIMER.cycleRound}/${TIMER.cycleRepeats}`
+    : esc((p.presets.find(x=>x.id===TIMER.presetId)||{}).name||'Timer');
   return `
     <div class="grid" style="grid-template-columns:320px 1fr;align-items:start;">
-      <div class="card" style="text-align:center;">
-        <div style="font-size:12.5px;color:var(--text-faint);margin-bottom:10px;text-transform:none;">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.topicId?' · '+esc(topicPath(TIMER.topicId)):''}</div>
+      <div class="card timer-card" style="text-align:center;">
+        <div class="timer-status-label">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.topicId?' · '+esc(topicPath(TIMER.topicId)):''}</div>
         <div class="pomodoro-time" id="pomodoroDisplay">${fmtTimer(TIMER.remaining)}</div>
+        <div class="timer-plan-label">${activeLabel}</div>
+        <div class="timer-progress"><div id="timerProgressBar"></div></div>
         <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;">
           <button class="btn btn-primary" onclick="${TIMER.running?'pauseTimer()':'startTimer()'}">${TIMER.running?'⏸ Pausar':'▶ Iniciar'}</button>
           <button class="btn" onclick="resetTimer()">↺ Zerar</button>
         </div>
-        <div style="display:flex;gap:6px;justify-content:center;margin-top:14px;">
-          <button class="btn btn-sm" onclick="setPreset(25,5)">25/5</button>
-          <button class="btn btn-sm" onclick="setPreset(50,10)">50/10</button>
-          <button class="btn btn-sm" onclick="customPreset()">Personalizado</button>
+        <div class="timer-quick-title">Timers</div>
+        <div class="timer-presets">
+          ${p.presets.map(x=>`<button class="btn btn-sm ${TIMER.planType==='preset'&&TIMER.presetId===x.id?'active-timer':''}" onclick="selectTimerPreset('${x.id}')">${esc(x.name)} <span>${x.work}/${x.brk}</span></button>`).join('')}
+          ${p.cycles.map(x=>`<button class="btn btn-sm timer-cycle-btn ${TIMER.planType==='cycle'&&TIMER.cycleId===x.id?'active-timer':''}" onclick="selectTimerCycle('${x.id}')">🔁 ${esc(x.name)}</button>`).join('')}
         </div>
-        <div class="field" style="margin-top:16px;text-align:left;">
+        <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="navigate('config')">⚙ Gerenciar timers e ciclos</button></div>
+        <div class="field" style="margin-top:14px;text-align:left;">
           <label>Área desta sessão</label>
           <select id="timerTopic" onchange="TIMER.topicId=this.value||null">
             <option value="">— Nenhuma —</option>
@@ -1084,40 +1124,101 @@ function viewSessoes(){
     </div>
   `;
 }
-function fmtTimer(sec){ const m=Math.floor(sec/60), s=sec%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }
-function refreshTimerDisplay(){ const el=document.getElementById('pomodoroDisplay'); if(el) el.textContent = fmtTimer(TIMER.remaining); }
+function fmtTimer(sec){ const m=Math.floor(Math.max(0,sec)/60), s=Math.max(0,sec)%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }
+function refreshTimerDisplay(){
+  const value=fmtTimer(TIMER.remaining);
+  const el=document.getElementById('pomodoroDisplay'); if(el) el.textContent=value;
+  const global=document.getElementById('globalTimerDisplay'); if(global) global.textContent=value;
+  const status=document.getElementById('globalTimerStatus'); if(status) status.textContent=TIMER.running?'Em andamento':'Pronto';
+  const modeEls=document.querySelectorAll('.sidebar-timer-mode'); modeEls.forEach(el=>el.textContent=TIMER.mode==='work'?'Foco':'Pausa');
+  const bar=document.getElementById('timerProgressBar');
+  if(bar){ const total=Math.max(1,(TIMER.mode==='work'?TIMER.currentWorkMinutes:TIMER.currentBreakMinutes)*60); bar.style.width=Math.max(0,Math.min(100,(TIMER.remaining/total)*100))+'%'; }
+}
+function getPresetById(id){ return STATE.settings.pomodoro.presets.find(x=>x.id===id)||STATE.settings.pomodoro.presets[0]; }
+function getCycleById(id){ return STATE.settings.pomodoro.cycles.find(x=>x.id===id)||STATE.settings.pomodoro.cycles[0]; }
+function selectTimerPreset(id){
+  const p=getPresetById(id); if(!p)return;
+  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.planType='preset'; TIMER.presetId=p.id; TIMER.cycleId=null; TIMER.cycleSteps=[]; TIMER.cycleRepeats=1; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=p.work; TIMER.currentBreakMinutes=p.brk; TIMER.remaining=p.work*60; render();
+}
+function selectTimerCycle(id){
+  const c=getCycleById(id); if(!c)return;
+  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.planType='cycle'; TIMER.cycleId=c.id; TIMER.presetId=null; TIMER.cycleSteps=c.steps.map(x=>({work:x.work,brk:x.brk})); TIMER.cycleRepeats=c.repeats; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=TIMER.cycleSteps[0].work; TIMER.currentBreakMinutes=TIMER.cycleSteps[0].brk; TIMER.remaining=TIMER.currentWorkMinutes*60; render();
+}
 function startTimer(){
+  if(TIMER.running)return;
   TIMER.running=true;
-  TIMER.intervalId = setInterval(()=>{
+  clearInterval(TIMER.intervalId);
+  TIMER.intervalId=setInterval(()=>{
     TIMER.remaining--;
-    if(TIMER.remaining<=0){
-      if(TIMER.mode==='work'){
-        logAutoSession();
-        TIMER.mode='break'; TIMER.remaining=STATE.settings.pomodoro.brk*60;
-        toast('Sessão de foco concluída — hora da pausa!');
-      } else {
-        TIMER.mode='work'; TIMER.remaining=STATE.settings.pomodoro.work*60;
-        toast('Pausa concluída — de volta ao foco!');
-      }
-      if(ROUTE==='sessoes') render();
-    }
+    if(TIMER.remaining<=0) handleTimerPhaseEnd();
     refreshTimerDisplay();
   },1000);
+  if(ROUTE==='sessoes') render(); else refreshTimerDisplay();
+}
+function handleTimerPhaseEnd(){
+  if(TIMER.mode==='work'){
+    const minutes=TIMER.currentWorkMinutes;
+    logAutoSession(minutes);
+    TIMER.mode='break'; TIMER.currentBreakMinutes=Math.max(0,TIMER.currentBreakMinutes); TIMER.remaining=TIMER.currentBreakMinutes*60;
+    if(TIMER.currentBreakMinutes>0){
+      if(ROUTE==='sessoes') render();
+      showStudyBreakOverlay(minutes);
+    }else{
+      advanceTimerCycle();
+    }
+  }else{
+    advanceTimerCycle();
+  }
+}
+function advanceTimerCycle(){
+  if(TIMER.planType==='cycle'){
+    TIMER.cycleStepIndex++;
+    if(TIMER.cycleStepIndex>=TIMER.cycleSteps.length){
+      if(TIMER.cycleRound<TIMER.cycleRepeats){ TIMER.cycleRound++; TIMER.cycleStepIndex=0; }
+      else { finishTimerCycle(); return; }
+    }
+    const step=TIMER.cycleSteps[TIMER.cycleStepIndex]; TIMER.mode='work'; TIMER.currentWorkMinutes=step.work; TIMER.currentBreakMinutes=step.brk; TIMER.remaining=step.work*60;
+  }else{
+    TIMER.mode='work'; TIMER.currentWorkMinutes=getPresetById(TIMER.presetId)?.work||STATE.settings.pomodoro.work; TIMER.currentBreakMinutes=getPresetById(TIMER.presetId)?.brk||STATE.settings.pomodoro.brk; TIMER.remaining=TIMER.currentWorkMinutes*60;
+  }
   if(ROUTE==='sessoes') render();
 }
-function logAutoSession(){
-  STATE.sessions.push({id:uid(), topicId:TIMER.topicId, date:todayISO(), duration:STATE.settings.pomodoro.work, observation:'Pomodoro automático', createdAt:new Date().toISOString()});
+function finishTimerCycle(){
+  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1;
+  const first=TIMER.cycleSteps[0]||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}; TIMER.currentWorkMinutes=first.work; TIMER.currentBreakMinutes=first.brk; TIMER.remaining=first.work*60;
+  showTimerFinishedOverlay();
+  if(ROUTE==='sessoes') render(); else refreshTimerDisplay();
+}
+function showStudyBreakOverlay(minutes){
+  const old=document.getElementById('timerTransitionOverlay'); if(old)old.remove();
+  const overlay=document.createElement('div'); overlay.id='timerTransitionOverlay'; overlay.className='timer-transition-overlay';
+  overlay.innerHTML=`<div class="timer-transition-card">
+    <div class="timer-transition-orbit"><div class="timer-transition-icon">✓</div><span></span><span></span><span></span></div>
+    <div class="timer-transition-kicker">FOCO CONCLUÍDO</div>
+    <h2>Excelente trabalho.</h2>
+    <p>Seu bloco de <strong>${minutes} min</strong> terminou. Agora é hora de respirar, levantar e descansar.</p>
+    <div class="timer-break-box"><span class="timer-break-icon">☕</span><div><small>PAUSA INICIADA</small><strong>${TIMER.currentBreakMinutes} min de descanso</strong></div><b>${fmtTimer(TIMER.remaining)}</b></div>
+    <button class="btn btn-primary" onclick="closeTimerOverlay()">Continuar</button>
+  </div>`;
+  document.body.appendChild(overlay);
+  setTimeout(()=>overlay.classList.add('show'),20);
+  if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=660;g.gain.setValueAtTime(.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.08,ctx.currentTime+.02);g.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.45);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.5);}catch(e){}}
+}
+function showTimerFinishedOverlay(){
+  const overlay=document.createElement('div'); overlay.id='timerTransitionOverlay'; overlay.className='timer-transition-overlay';
+  overlay.innerHTML=`<div class="timer-transition-card timer-finished-card"><div class="timer-complete-mark">★</div><div class="timer-transition-kicker">CICLO CONCLUÍDO</div><h2>Você terminou o ciclo.</h2><p>Seu plano de estudos foi concluído. Aproveite a sensação de progresso — e descanse antes do próximo bloco.</p><button class="btn btn-primary" onclick="closeTimerOverlay()">Finalizar</button></div>`;
+  document.body.appendChild(overlay); setTimeout(()=>overlay.classList.add('show'),20);
+}
+function closeTimerOverlay(){const el=document.getElementById('timerTransitionOverlay');if(el){el.classList.remove('show');setTimeout(()=>el.remove(),180);}}
+function logAutoSession(duration){
+  STATE.sessions.push({id:uid(), topicId:TIMER.topicId, date:todayISO(), duration, observation:'Timer automático', createdAt:new Date().toISOString()});
   saveState();
 }
-function pauseTimer(){ TIMER.running=false; clearInterval(TIMER.intervalId); render(); }
-function resetTimer(){ clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.mode='work'; TIMER.remaining=STATE.settings.pomodoro.work*60; render(); }
-function setPreset(work,brk){ STATE.settings.pomodoro={work,brk}; resetTimer(); saveState(); }
-function customPreset(){
-  const w = prompt('Minutos de foco:', STATE.settings.pomodoro.work);
-  if(!w) return;
-  const b = prompt('Minutos de pausa:', STATE.settings.pomodoro.brk);
-  setPreset(Number(w)||25, Number(b)||5);
-}
+function pauseTimer(){ TIMER.running=false; clearInterval(TIMER.intervalId); refreshTimerDisplay(); if(ROUTE==='sessoes')render(); }
+function resetTimer(){ clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; if(TIMER.planType==='cycle'){const c=getCycleById(TIMER.cycleId); if(c){TIMER.cycleSteps=c.steps.map(x=>({...x}));TIMER.cycleRepeats=c.repeats;}} const first=TIMER.planType==='cycle'?(TIMER.cycleSteps[0]||{work:25,brk:5}):getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}; TIMER.currentWorkMinutes=first.work; TIMER.currentBreakMinutes=first.brk; TIMER.remaining=first.work*60; if(ROUTE==='sessoes')render(); else refreshTimerDisplay(); }
+function setPreset(work,brk){ addTimerPresetDirect('Timer rápido',work,brk); }
+function customPreset(){ navigate('config'); setTimeout(()=>document.getElementById('timerPresetName')?.focus(),50); }
+
 function openSessionModal(id=null, forDate=null){
   const editing = id? STATE.sessions.find(s=>s.id===id): null;
   showModal(`
@@ -2039,15 +2140,37 @@ function viewHistorico(){
    CONFIGURAÇÕES
 ===================================================================== */
 function viewConfig(){
-  const s = STATE.settings;
+  const s=STATE.settings, p=s.pomodoro;
   return `
-    <div class="card" style="margin-bottom:16px;max-width:560px;">
-      <div class="section-title">Terminologia</div>
-      <div class="field-row">
-        <div class="field"><label>Nome para "área"</label><input id="cfgArea" value="${esc(s.terms.area)}"></div>
-        <div class="field"><label>Nome para "tópico"</label><input id="cfgSub" value="${esc(s.terms.sub)}"></div>
+    <div class="card" style="margin-bottom:16px;max-width:900px;">
+      <div class="section-title">Timers de estudo <span class="see-all">crie, edite ou remova seus presets</span></div>
+      <div class="timer-manager-list">
+        ${p.presets.map(x=>`<div class="timer-manager-row"><div><strong>${esc(x.name)}</strong><span>${x.work} min foco · ${x.brk} min pausa</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerPreset('${x.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn" title="Excluir timer" onclick="deleteTimerPreset('${x.id}')">🗑</button></div></div>`).join('')}
       </div>
-      <button class="btn btn-sm" onclick="saveTerms()">Salvar</button>
+      <div class="timer-add-box">
+        <div class="field-row">
+          <div class="field"><label>Nome do timer</label><input id="timerPresetName" placeholder="Ex: Revisão rápida"></div>
+          <div class="field"><label>Foco (min)</label><input type="number" id="timerPresetWork" min="1" max="180" value="25"></div>
+          <div class="field"><label>Pausa (min)</label><input type="number" id="timerPresetBreak" min="0" max="60" value="5"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="addTimerPresetFromForm()">+ Adicionar timer</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;max-width:900px;">
+      <div class="section-title">Ciclos personalizados <span class="see-all">combine blocos diferentes e repita automaticamente</span></div>
+      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn" title="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
+      <div class="timer-cycle-builder">
+        <div class="field-row">
+          <div class="field"><label>Nome do ciclo</label><input id="cycleName" value="Ciclo personalizado" maxlength="60"></div>
+          <div class="field" style="max-width:180px;"><label>Repetir ciclo</label><input type="number" id="cycleRepeats" value="4" min="1" max="20"></div>
+        </div>
+        <div class="cycle-builder-head"><strong>Etapas</strong><button class="btn btn-sm" onclick="addCycleBuilderStep()">+ Adicionar etapa</button></div>
+        <div id="cycleBuilderSteps">
+          <div class="cycle-step-row"><span class="cycle-step-number">1</span><input type="number" class="cycle-work" min="1" max="180" value="60" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="60" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>
+        </div>
+        <button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="saveCycleFromBuilder()">Salvar ciclo</button>
+      </div>
     </div>
 
     <div class="card" style="margin-bottom:16px;max-width:560px;">
@@ -2072,16 +2195,41 @@ function viewConfig(){
         <label class="btn" style="cursor:pointer;">⬆ Importar backup<input type="file" accept=".json" style="display:none;" onchange="importJSON(this.files[0])"></label>
         <button class="btn btn-danger" onclick="resetAll()">Apagar todos os dados</button>
       </div>
-      <div style="font-size:11.5px;color:var(--text-faint);margin-top:10px;">Seus dados ficam salvos automaticamente neste artefato do Claude. Exporte periodicamente para ter uma cópia de segurança.</div>
+      <div style="font-size:11.5px;color:var(--text-faint);margin-top:10px;">Seus dados ficam salvos automaticamente. Exporte periodicamente para ter uma cópia de segurança.</div>
     </div>
   `;
 }
+function addTimerPresetDirect(name,work,brk){
+  const p=STATE.settings.pomodoro; p.presets.push({id:uid(),name:String(name||'Novo timer').trim().slice(0,50),work:Math.max(1,Math.min(180,Number(work)||25)),brk:Math.max(0,Math.min(60,Number(brk)||5))}); saveState(); render(); toast('Timer adicionado');
+}
+function addTimerPresetFromForm(){
+  const name=document.getElementById('timerPresetName').value.trim(); const work=Number(document.getElementById('timerPresetWork').value); const brk=Number(document.getElementById('timerPresetBreak').value);
+  if(!name||!work||work<1){toast('Informe nome e tempo de foco');return;} addTimerPresetDirect(name,work,Number.isFinite(brk)?brk:5);
+}
+function deleteTimerPreset(id){
+  const p=STATE.settings.pomodoro; if(p.presets.length<=1){toast('Mantenha pelo menos um timer');return;} if(!confirm('Excluir este timer?'))return; p.presets=p.presets.filter(x=>x.id!==id); if(TIMER.presetId===id){const next=p.presets[0];TIMER.presetId=next.id;TIMER.planType='preset';resetTimer();} saveState();render();
+}
+function addCycleBuilderStep(){
+  const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="60" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
+}
+function removeCycleBuilderStep(btn){const wrap=document.getElementById('cycleBuilderSteps');if(!wrap||wrap.children.length<=1){toast('O ciclo precisa ter pelo menos uma etapa');return;}btn.closest('.cycle-step-row').remove();renumberCycleBuilder();}
+function renumberCycleBuilder(){document.querySelectorAll('#cycleBuilderSteps .cycle-step-row').forEach((r,i)=>r.querySelector('.cycle-step-number').textContent=i+1);}
+function saveCycleFromBuilder(){
+  const name=document.getElementById('cycleName').value.trim(); const repeats=Math.max(1,Math.min(20,Number(document.getElementById('cycleRepeats').value)||1));
+  const steps=[...document.querySelectorAll('#cycleBuilderSteps .cycle-step-row')].map(r=>({work:Math.max(1,Math.min(180,Number(r.querySelector('.cycle-work').value)||25)),brk:Math.max(0,Math.min(60,Number(r.querySelector('.cycle-break').value)||0))}));
+  if(!name||!steps.length){toast('Informe o nome e pelo menos uma etapa');return;} STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats,steps});saveState();render();toast('Ciclo salvo com sucesso');
+}
+function deleteTimerCycle(id){if(!confirm('Excluir este ciclo?'))return;STATE.settings.pomodoro.cycles=STATE.settings.pomodoro.cycles.filter(x=>x.id!==id);if(TIMER.cycleId===id){TIMER.planType='preset';TIMER.cycleId=null;const p=STATE.settings.pomodoro.presets[0];TIMER.presetId=p.id;resetTimer();}saveState();render();}
 function saveTerms(){
   STATE.settings.terms = {area:document.getElementById('cfgArea').value, sub:document.getElementById('cfgSub').value};
   saveState(); toast('Terminologia salva');
 }
 function savePomodoro(){
-  STATE.settings.pomodoro = {work:Number(document.getElementById('cfgWork').value)||25, brk:Number(document.getElementById('cfgBrk').value)||5};
+  STATE.settings.pomodoro.work=Math.max(1,Math.min(180,Number(document.getElementById('cfgWork').value)||25));
+  STATE.settings.pomodoro.brk=Math.max(0,Math.min(60,Number(document.getElementById('cfgBrk').value)||5));
+  if(!STATE.settings.pomodoro.presets.length)STATE.settings.pomodoro.presets=[{id:uid(),name:'Padrão',work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}];
+  STATE.settings.pomodoro.presets[0].work=STATE.settings.pomodoro.work; STATE.settings.pomodoro.presets[0].brk=STATE.settings.pomodoro.brk;
+  if(TIMER.planType==='preset')TIMER.presetId=STATE.settings.pomodoro.presets[0].id;
   resetTimer(); saveState(); toast('Pomodoro atualizado');
 }
 function saveIntervals(){
