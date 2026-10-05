@@ -943,3 +943,159 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible{outline:2px soli
 .timer-break-icon{font-size:22px}.timer-break-box div{display:flex;flex-direction:column;flex:1}.timer-break-box small{font-size:9px;letter-spacing:.1em;color:var(--teal);font-weight:700}.timer-break-box strong{font-size:12px;margin-top:2px}.timer-break-box>b{font-family:'JetBrains Mono',monospace;font-size:16px;color:var(--teal)}
 .timer-complete-mark{position:relative;width:78px;height:78px;margin:0 auto 2px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--amber-soft);border:1px solid var(--amber-dim);color:var(--amber);font-size:30px;box-shadow:0 0 45px rgba(232,163,61,.13)}
 @media(max-width:860px){.sidebar-timer{display:none}.timer-transition-card{padding:28px 20px 22px}.timer-transition-card h2{font-size:24px}.cycle-step-row{flex-wrap:wrap}}
+
+/* =========================================================
+   RESPONSIVIDADE — SESSÕES / TIMER
+========================================================= */
+.sessions-page-grid{
+  grid-template-columns:minmax(0,320px) minmax(0,1fr);
+  align-items:start;
+}
+.sessions-timer-card{min-width:0;}
+.timer-main-actions{
+  display:flex;
+  gap:8px;
+  justify-content:center;
+  align-items:center;
+  margin-top:16px;
+  flex-wrap:wrap;
+}
+.sessions-list-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:10px;
+  margin-bottom:12px;
+}
+.session-list-card{
+  padding:6px 16px;
+  min-width:0;
+  overflow:hidden;
+}
+.session-list-row{min-width:0;}
+.session-date{
+  width:64px;
+  flex:0 0 64px;
+  font-size:11.5px;
+  color:var(--text-faint);
+}
+.session-topic{
+  flex:1;
+  min-width:0;
+  font-size:13px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+@media (max-width: 860px){
+  .sessions-page-grid{
+    grid-template-columns:minmax(0,1fr) !important;
+    width:100%;
+  }
+  .sessions-timer-card,
+  .session-list-card{
+    width:100%;
+    max-width:100%;
+  }
+  .sessions-timer-card{padding:16px 14px;}
+  .timer-plan-label{
+    max-width:100%;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .timer-presets{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    width:100%;
+  }
+  .timer-presets .btn{
+    width:100%;
+    min-width:0;
+    flex:none;
+    white-space:normal;
+    line-height:1.25;
+  }
+  .timer-main-actions .btn{
+    flex:1 1 0;
+    min-width:0;
+  }
+  .sessions-list-head{
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+  .sessions-list-head .section-title{
+    flex:1 1 180px;
+    min-width:0;
+  }
+  .sessions-list-head > .btn{
+    flex:0 1 auto;
+    max-width:100%;
+  }
+  .session-list-card{padding:4px 10px;}
+  .session-list-row{
+    display:grid;
+    grid-template-columns:56px minmax(0,1fr) auto 30px;
+    align-items:center;
+    gap:8px;
+  }
+  .session-date{
+    width:auto;
+    min-width:0;
+    flex:none;
+  }
+  .session-topic{
+    width:auto;
+    min-width:0;
+    flex:none;
+  }
+  .session-list-row .pill{
+    justify-self:end;
+    white-space:nowrap;
+  }
+  .session-list-row .btn-trash{justify-self:end;}
+}
+
+@media (max-width: 560px){
+  .content{overflow-x:hidden;}
+  .sessions-timer-card .pomodoro-time{font-size:36px;}
+  .timer-presets{grid-template-columns:1fr 1fr;}
+  .timer-presets .btn{min-height:36px;}
+  .sessions-list-head{
+    flex-direction:column;
+    align-items:stretch;
+  }
+  .sessions-list-head .section-title{
+    flex:auto;
+    margin-bottom:0;
+  }
+  .sessions-list-head > .btn{
+    width:100%;
+    justify-content:center;
+  }
+}
+
+@media (max-width: 420px){
+  .sessions-timer-card{padding:14px 11px;}
+  .sessions-timer-card .pomodoro-time{font-size:33px;}
+  .timer-main-actions{gap:6px;}
+  .timer-main-actions .btn{
+    padding-left:10px;
+    padding-right:10px;
+  }
+  .timer-presets{grid-template-columns:1fr;}
+  .timer-presets .btn{min-height:34px;}
+  .session-list-row{
+    grid-template-columns:46px minmax(0,1fr) 30px;
+    grid-template-areas:
+      "date topic trash"
+      "date duration trash";
+    row-gap:3px;
+    padding:10px 2px;
+  }
+  .session-list-row .session-date{grid-area:date;}
+  .session-list-row .session-topic{grid-area:topic;}
+  .session-list-row .pill{grid-area:duration;justify-self:start;}
+  .session-list-row .btn-trash{grid-area:trash;}
+}

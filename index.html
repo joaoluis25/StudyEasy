@@ -1107,13 +1107,13 @@ function viewSessoes(){
     ? `${TIMER.cycleId?esc((p.cycles.find(c=>c.id===TIMER.cycleId)||{}).name||'Ciclo'): 'Ciclo'} · ${TIMER.cycleRound}/${TIMER.cycleRepeats}`
     : esc((p.presets.find(x=>x.id===TIMER.presetId)||{}).name||'Timer');
   return `
-    <div class="grid" style="grid-template-columns:320px 1fr;align-items:start;">
-      <div class="card timer-card" style="text-align:center;">
+    <div class="grid sessions-page-grid">
+      <div class="card timer-card sessions-timer-card">
         <div class="timer-status-label">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.topicId?' · '+esc(topicPath(TIMER.topicId)):''}</div>
         <div class="pomodoro-time" id="pomodoroDisplay">${fmtTimer(TIMER.remaining)}</div>
         <div class="timer-plan-label">${activeLabel}</div>
         <div class="timer-progress"><div id="timerProgressBar"></div></div>
-        <div style="display:flex;gap:8px;justify-content:center;margin-top:16px;">
+        <div class="timer-main-actions">
           <button class="btn btn-primary" onclick="${TIMER.running?'pauseTimer()':'startTimer()'}">${TIMER.running?'⏸ Pausar':'▶ Iniciar'}</button>
           <button class="btn" onclick="resetTimer()">↺ Zerar</button>
         </div>
@@ -1132,15 +1132,15 @@ function viewSessoes(){
         </div>
       </div>
       <div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div class="sessions-list-head">
           <div class="section-title" style="margin:0;">Sessões registradas</div>
           <button class="btn btn-primary btn-sm" onclick="openSessionModal()">+ Registrar manualmente</button>
         </div>
-        <div class="card" style="padding:6px 16px;">
+        <div class="card session-list-card">
           ${sessions.length? sessions.map(s=>`
-            <div class="list-row">
-              <span style="font-size:11.5px;color:var(--text-faint);width:64px;">${fmtDateShort(s.date)}</span>
-              <span style="flex:1;font-size:13px;">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
+            <div class="list-row session-list-row">
+              <span class="session-date">${fmtDateShort(s.date)}</span>
+              <span class="session-topic">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
               <span class="pill pill-teal">${minutesToHM(s.duration||0)}</span>
               <button class="icon-btn btn-sm btn-trash" title="Excluir sessão" aria-label="Excluir sessão" onclick="deleteSession('${s.id}')">🗑</button>
             </div>`).join('') : emptyRow('Nenhuma sessão registrada ainda.')}
