@@ -202,7 +202,7 @@ let QUESTION_FILTER = {
 };
 /*--------------------------------------------------------------*/
 let TIMER = {
-  running:false, mode:'work', remaining:25*60, intervalId:null, topicId:null,
+  running:false, hasStarted:false, mode:'work', remaining:25*60, intervalId:null, topicId:null,
   planType:'preset', presetId:'p25', cycleId:null, cycleSteps:[], cycleRepeats:1,
   cycleStepIndex:0, cycleRound:1, currentWorkMinutes:25, currentBreakMinutes:5
 };
@@ -244,8 +244,14 @@ function render(){
       </div>
       <div class="sidebar-foot">
         <div class="sidebar-timer" onclick="navigate('sessoes')" title="Abrir sessões e controlar o timer">
-          <div class="sidebar-timer-top"><span>⏱️ Timer</span><span id="globalTimerStatus">${TIMER.running?'Em andamento':'Pronto'}</span></div>
-          <div class="sidebar-timer-time" id="globalTimerDisplay">${fmtTimer(TIMER.remaining)}</div>
+          <div class="sidebar-timer-top">
+            <span>⏱️ Timer</span>
+            <span id="globalTimerStatus">${TIMER.running?'Em andamento':(TIMER.hasStarted?'Pausado':'Pronto')}</span>
+          </div>
+          <div class="sidebar-timer-main">
+            <div class="sidebar-timer-time" id="globalTimerDisplay">${fmtTimer(TIMER.remaining)}</div>
+            <button class="sidebar-timer-toggle" id="globalTimerToggle" type="button" onclick="toggleSidebarTimer(event)" aria-label="${TIMER.running?'Pausar timer':'Continuar timer'}" title="${TIMER.running?'Pausar timer':'Continuar timer'}">${TIMER.running?'⏸':'▶'}</button>
+          </div>
           <div class="sidebar-timer-mode">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.planType==='cycle'?' · Ciclo':''}</div>
         </div>
         <div class="streak-pill">
@@ -562,7 +568,7 @@ function renderTopicNode(t, depth){
       <div class="actions">
         <button class="icon-btn" title="Adicionar subtópico" onclick="event.stopPropagation();openTopicModal(null,'${t.id}')">+</button>
         <button class="icon-btn" title="Editar" onclick="event.stopPropagation();openTopicModal('${t.id}')">✎</button>
-        <button class="icon-btn btn-danger" title="Excluir" onclick="event.stopPropagation();deleteTopic('${t.id}')">🗑</button>
+        <button class="icon-btn btn-trash" title="Excluir" onclick="event.stopPropagation();deleteTopic('${t.id}')">🗑</button>
       </div>
     </div>`;
   children.forEach(c=> html += renderTopicNode(c, depth+1));
@@ -689,7 +695,7 @@ function openTopicModal(id=null, parentId=null){
 </div>
     <div class="field"><label>Progresso manual (%)</label><input type="range" id="mTopicProgress" min="0" max="100" value="${editing?(editing.progress||0):0}" oninput="document.getElementById('mTopicProgressVal').textContent=this.value+'%'"> <span id="mTopicProgressVal" style="font-size:12px;color:var(--text-dim);">${editing?(editing.progress||0):0}%</span></div>
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteTopic('${id}');closeModal()">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteTopic('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveTopic('${id||''}')">Salvar</button>
     </div>
@@ -735,11 +741,20 @@ function saveTopic(id){
   saveState(); closeModal(); render(); toast('Tópico salvo');
 }
 function deleteTopic(id){
-  if(!confirm('Excluir este tópico e todos os subtópicos? As anotações vinculadas não serão apagadas, apenas desvinculadas.')) return;
+  const topic = STATE.topics.find(x=>x.id===id);
+  if(!topic) return;
   const ids = allDescendantIds(id);
-  STATE.topics = STATE.topics.filter(t=>!ids.includes(t.id));
-  STATE.notes.forEach(n=>{ if(ids.includes(n.topicId)) n.topicId=null; });
-  saveState(); render(); toast('Tópico excluído');
+  const childCount = Math.max(0, ids.length-1);
+  showDeleteConfirm({
+    title:'Excluir tópico?',
+    message:`Você está prestes a excluir “${topic.name}”${childCount?` e ${childCount} subtópico(s)`:''}.`,
+    detail:'As anotações vinculadas não serão apagadas; elas apenas serão desvinculadas deste tópico.',
+    onConfirm:()=>{
+      STATE.topics = STATE.topics.filter(t=>!ids.includes(t.id));
+      STATE.notes.forEach(n=>{ if(ids.includes(n.topicId)) n.topicId=null; });
+      saveState(); closeModal(); render(); toast('Tópico excluído');
+    }
+  });
 }
 
 /* =====================================================================
@@ -849,7 +864,7 @@ function openNoteModal(id=null, forDate=null){
     </div>
 
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteNote('${id}')">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteNote('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveNote('${id||''}','${forDate||''}')">Salvar anotação</button>
     </div>
@@ -906,9 +921,14 @@ function saveNote(id, forDate){
   saveState(); closeModal(); render(); toast('Anotação salva');
 }
 function deleteNote(id){
-  if(!confirm('Excluir esta anotação?')) return;
-  STATE.notes = STATE.notes.filter(n=>n.id!==id);
-  saveState(); closeModal(); render(); toast('Anotação excluída');
+  const note = STATE.notes.find(x=>x.id===id);
+  if(!note) return;
+  showDeleteConfirm({
+    title:'Excluir anotação?',
+    message:`A anotação “${note.title||'Sem título'}” será excluída.`,
+    detail:'Esta ação não pode ser desfeita.',
+    onConfirm:()=>{ STATE.notes = STATE.notes.filter(n=>n.id!==id); saveState(); closeModal(); render(); toast('Anotação excluída'); }
+  });
 }
 
 /* =====================================================================
@@ -986,7 +1006,7 @@ function openGoalModal(id=null){
       <button type="button" class="btn btn-sm" style="margin-top:6px;" onclick="addGoalChecklistRow()">+ etapa</button>
     </div>
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteGoal('${id}')">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteGoal('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveGoal('${id||''}')">Salvar meta</button>
     </div>
@@ -1020,9 +1040,14 @@ function saveGoal(id){
   saveState(); closeModal(); render(); toast('Meta salva');
 }
 function deleteGoal(id){
-  if(!confirm('Excluir esta meta?')) return;
-  STATE.goals = STATE.goals.filter(g=>g.id!==id);
-  saveState(); closeModal(); render(); toast('Meta excluída');
+  const goal = STATE.goals.find(x=>x.id===id);
+  if(!goal) return;
+  showDeleteConfirm({
+    title:'Excluir meta?',
+    message:`A meta “${goal.title||'Sem título'}” será excluída.`,
+    detail:'Todos os dados e checklist desta meta serão removidos.',
+    onConfirm:()=>{ STATE.goals = STATE.goals.filter(g=>g.id!==id); saveState(); closeModal(); render(); toast('Meta excluída'); }
+  });
 }
 
 /* =====================================================================
@@ -1117,7 +1142,7 @@ function viewSessoes(){
               <span style="font-size:11.5px;color:var(--text-faint);width:64px;">${fmtDateShort(s.date)}</span>
               <span style="flex:1;font-size:13px;">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
               <span class="pill pill-teal">${minutesToHM(s.duration||0)}</span>
-              <button class="icon-btn btn-sm" onclick="deleteSession('${s.id}')">🗑</button>
+              <button class="icon-btn btn-sm btn-trash" title="Excluir sessão" aria-label="Excluir sessão" onclick="deleteSession('${s.id}')">🗑</button>
             </div>`).join('') : emptyRow('Nenhuma sessão registrada ainda.')}
         </div>
       </div>
@@ -1129,7 +1154,13 @@ function refreshTimerDisplay(){
   const value=fmtTimer(TIMER.remaining);
   const el=document.getElementById('pomodoroDisplay'); if(el) el.textContent=value;
   const global=document.getElementById('globalTimerDisplay'); if(global) global.textContent=value;
-  const status=document.getElementById('globalTimerStatus'); if(status) status.textContent=TIMER.running?'Em andamento':'Pronto';
+  const status=document.getElementById('globalTimerStatus'); if(status) status.textContent=TIMER.running?'Em andamento':(TIMER.hasStarted?'Pausado':'Pronto');
+  const toggle=document.getElementById('globalTimerToggle');
+  if(toggle){
+    toggle.textContent=TIMER.running?'⏸':'▶';
+    toggle.title=TIMER.running?'Pausar timer':'Continuar timer';
+    toggle.setAttribute('aria-label',TIMER.running?'Pausar timer':'Continuar timer');
+  }
   const modeEls=document.querySelectorAll('.sidebar-timer-mode'); modeEls.forEach(el=>el.textContent=TIMER.mode==='work'?'Foco':'Pausa');
   const bar=document.getElementById('timerProgressBar');
   if(bar){ const total=Math.max(1,(TIMER.mode==='work'?TIMER.currentWorkMinutes:TIMER.currentBreakMinutes)*60); bar.style.width=Math.max(0,Math.min(100,(TIMER.remaining/total)*100))+'%'; }
@@ -1138,14 +1169,15 @@ function getPresetById(id){ return STATE.settings.pomodoro.presets.find(x=>x.id=
 function getCycleById(id){ return STATE.settings.pomodoro.cycles.find(x=>x.id===id)||STATE.settings.pomodoro.cycles[0]; }
 function selectTimerPreset(id){
   const p=getPresetById(id); if(!p)return;
-  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.planType='preset'; TIMER.presetId=p.id; TIMER.cycleId=null; TIMER.cycleSteps=[]; TIMER.cycleRepeats=1; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=p.work; TIMER.currentBreakMinutes=p.brk; TIMER.remaining=p.work*60; render();
+  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.planType='preset'; TIMER.presetId=p.id; TIMER.cycleId=null; TIMER.cycleSteps=[]; TIMER.cycleRepeats=1; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=p.work; TIMER.currentBreakMinutes=p.brk; TIMER.remaining=p.work*60; render();
 }
 function selectTimerCycle(id){
   const c=getCycleById(id); if(!c)return;
-  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.planType='cycle'; TIMER.cycleId=c.id; TIMER.presetId=null; TIMER.cycleSteps=c.steps.map(x=>({work:x.work,brk:x.brk})); TIMER.cycleRepeats=c.repeats; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=TIMER.cycleSteps[0].work; TIMER.currentBreakMinutes=TIMER.cycleSteps[0].brk; TIMER.remaining=TIMER.currentWorkMinutes*60; render();
+  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.planType='cycle'; TIMER.cycleId=c.id; TIMER.presetId=null; TIMER.cycleSteps=c.steps.map(x=>({work:x.work,brk:x.brk})); TIMER.cycleRepeats=c.repeats; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=TIMER.cycleSteps[0].work; TIMER.currentBreakMinutes=TIMER.cycleSteps[0].brk; TIMER.remaining=TIMER.currentWorkMinutes*60; render();
 }
 function startTimer(){
   if(TIMER.running)return;
+  TIMER.hasStarted=true;
   TIMER.running=true;
   clearInterval(TIMER.intervalId);
   TIMER.intervalId=setInterval(()=>{
@@ -1184,7 +1216,7 @@ function advanceTimerCycle(){
   if(ROUTE==='sessoes') render();
 }
 function finishTimerCycle(){
-  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1;
+  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1;
   const first=TIMER.cycleSteps[0]||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}; TIMER.currentWorkMinutes=first.work; TIMER.currentBreakMinutes=first.brk; TIMER.remaining=first.work*60;
   showTimerFinishedOverlay();
   if(ROUTE==='sessoes') render(); else refreshTimerDisplay();
@@ -1215,7 +1247,7 @@ function logAutoSession(duration){
   saveState();
 }
 function pauseTimer(){ TIMER.running=false; clearInterval(TIMER.intervalId); refreshTimerDisplay(); if(ROUTE==='sessoes')render(); }
-function resetTimer(){ clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; if(TIMER.planType==='cycle'){const c=getCycleById(TIMER.cycleId); if(c){TIMER.cycleSteps=c.steps.map(x=>({...x}));TIMER.cycleRepeats=c.repeats;}} const first=TIMER.planType==='cycle'?(TIMER.cycleSteps[0]||{work:25,brk:5}):getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}; TIMER.currentWorkMinutes=first.work; TIMER.currentBreakMinutes=first.brk; TIMER.remaining=first.work*60; if(ROUTE==='sessoes')render(); else refreshTimerDisplay(); }
+function resetTimer(){ clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; if(TIMER.planType==='cycle'){const c=getCycleById(TIMER.cycleId); if(c){TIMER.cycleSteps=c.steps.map(x=>({...x}));TIMER.cycleRepeats=c.repeats;}} const first=TIMER.planType==='cycle'?(TIMER.cycleSteps[0]||{work:25,brk:5}):getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}; TIMER.currentWorkMinutes=first.work; TIMER.currentBreakMinutes=first.brk; TIMER.remaining=first.work*60; if(ROUTE==='sessoes')render(); else refreshTimerDisplay(); }
 function setPreset(work,brk){ addTimerPresetDirect('Timer rápido',work,brk); }
 function customPreset(){ navigate('config'); setTimeout(()=>document.getElementById('timerPresetName')?.focus(),50); }
 
@@ -1230,7 +1262,7 @@ function openSessionModal(id=null, forDate=null){
     </div>
     <div class="field"><label>Observações</label><textarea id="mSessObs" rows="2">${editing?esc(editing.observation||''):''}</textarea></div>
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteSession('${id}');closeModal()">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteSession('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveSession('${id||''}')">Salvar</button>
     </div>
@@ -1249,8 +1281,14 @@ function saveSession(id){
   saveState(); closeModal(); render(); toast('Sessão salva');
 }
 function deleteSession(id){
-  STATE.sessions = STATE.sessions.filter(s=>s.id!==id);
-  saveState(); render();
+  const session = STATE.sessions.find(x=>x.id===id);
+  if(!session) return;
+  showDeleteConfirm({
+    title:'Excluir sessão?',
+    message:`A sessão de ${minutesToHM(session.duration||0)} será excluída.`,
+    detail:'Ela deixará de contar no tempo total e nas estatísticas de estudo.',
+    onConfirm:()=>{ STATE.sessions = STATE.sessions.filter(s=>s.id!==id); saveState(); closeModal(); render(); toast('Sessão excluída'); }
+  });
 }
 
 /* =====================================================================
@@ -1292,7 +1330,7 @@ function openDoubtModal(id=null){
       <div class="toggle ${editing&&editing.status==='resolvida'?'on':''}" id="mDoubtToggle" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
     </div>
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteDoubt('${id}');closeModal()">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteDoubt('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveDoubt('${id||''}')">Salvar</button>
     </div>
@@ -1311,7 +1349,16 @@ function saveDoubt(id){
   }
   saveState(); closeModal(); render(); toast('Dúvida salva');
 }
-function deleteDoubt(id){ STATE.doubts=STATE.doubts.filter(d=>d.id!==id); saveState(); render(); }
+function deleteDoubt(id){
+  const doubt = STATE.doubts.find(x=>x.id===id);
+  if(!doubt) return;
+  showDeleteConfirm({
+    title:'Excluir dúvida?',
+    message:`A dúvida “${String(doubt.question||'Sem título').slice(0,90)}” será excluída.`,
+    detail:'A explicação e o status de resolução também serão removidos.',
+    onConfirm:()=>{ STATE.doubts=STATE.doubts.filter(d=>d.id!==id); saveState(); closeModal(); render(); toast('Dúvida excluída'); }
+  });
+}
 
 /* =====================================================================
    FLASHCARDS
@@ -1345,7 +1392,7 @@ function viewFlashcards(){
       </div>
       <div style="display:flex;justify-content:center;gap:8px;margin-top:12px;">
         <button class="btn btn-sm" onclick="openFlashcardModal('${current.id}')">✎ Editar</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteFlashcard('${current.id}')">🗑 Excluir</button>
+        <button class="btn btn-sm btn-danger delete-action" onclick="deleteFlashcard('${current.id}')"><span class="trash-icon">🗑</span> Excluir</button>
       </div>
     </div>
     <div class="section-title">Todos os cartões</div>
@@ -1369,7 +1416,7 @@ function openFlashcardModal(id=null){
       </select></div>
     </div>
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteFlashcard('${id}');closeModal()">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteFlashcard('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveFlashcard('${id||''}')">Salvar</button>
     </div>
@@ -1388,7 +1435,16 @@ function saveFlashcard(id){
   }
   saveState(); closeModal(); render(); toast('Flashcard salvo');
 }
-function deleteFlashcard(id){ STATE.flashcards=STATE.flashcards.filter(f=>f.id!==id); FLASH_INDEX=0; saveState(); render(); }
+function deleteFlashcard(id){
+  const flash = STATE.flashcards.find(x=>x.id===id);
+  if(!flash) return;
+  showDeleteConfirm({
+    title:'Excluir flashcard?',
+    message:`Este flashcard será excluído permanentemente.`,
+    detail:`Frente: “${String(flash.front||'Sem conteúdo').slice(0,90)}”`,
+    onConfirm:()=>{ STATE.flashcards=STATE.flashcards.filter(f=>f.id!==id); FLASH_INDEX=0; saveState(); closeModal(); render(); toast('Flashcard excluído'); }
+  });
+}
 
 /* =====================================================================
    QUESTÕES
@@ -1955,7 +2011,7 @@ function openQuestionModal(id=null){
     </div>
     <div class="field"><label>Tags</label><input id="mQTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="separadas por vírgula"></div>
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteQuestion('${id}');closeModal()">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteQuestion('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveQuestion('${id||''}')">Salvar</button>
     </div>
@@ -1975,7 +2031,16 @@ function saveQuestion(id){
   }
   saveState(); closeModal(); render(); toast('Questão salva');
 }
-function deleteQuestion(id){ STATE.questions=STATE.questions.filter(q=>q.id!==id); saveState(); render(); }
+function deleteQuestion(id){
+  const question = STATE.questions.find(x=>x.id===id);
+  if(!question) return;
+  showDeleteConfirm({
+    title:'Excluir questão?',
+    message:'Esta questão será removida da sua base de estudos.',
+    detail:`Pergunta: “${String(question.question||'Sem conteúdo').slice(0,100)}”`,
+    onConfirm:()=>{ STATE.questions=STATE.questions.filter(q=>q.id!==id); saveState(); closeModal(); render(); toast('Questão excluída'); }
+  });
+}
 
 /* =====================================================================
    EVENTOS / PROVAS
@@ -2018,7 +2083,7 @@ function openEventModal(id=null){
     </div>
     <div class="field"><label>Área relacionada</label><select id="mEvTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
     <div class="modal-actions">
-      ${editing?`<button class="btn btn-danger" style="margin-right:auto;" onclick="deleteEvent('${id}');closeModal()">Excluir</button>`:''}
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteEvent('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="saveEvent('${id||''}')">Salvar</button>
     </div>
@@ -2037,7 +2102,16 @@ function saveEvent(id){
   }
   saveState(); closeModal(); render(); toast('Evento salvo');
 }
-function deleteEvent(id){ STATE.events=STATE.events.filter(e=>e.id!==id); saveState(); render(); }
+function deleteEvent(id){
+  const event = STATE.events.find(x=>x.id===id);
+  if(!event) return;
+  showDeleteConfirm({
+    title:'Excluir evento?',
+    message:`O evento “${event.title||'Sem título'}” será excluído.`,
+    detail:'Essa alteração também será refletida no calendário e nos próximos eventos.',
+    onConfirm:()=>{ STATE.events=STATE.events.filter(e=>e.id!==id); saveState(); closeModal(); render(); toast('Evento excluído'); }
+  });
+}
 
 /* =====================================================================
    ESTATÍSTICAS
@@ -2145,7 +2219,7 @@ function viewConfig(){
     <div class="card" style="margin-bottom:16px;max-width:900px;">
       <div class="section-title">Timers de estudo <span class="see-all">crie, edite ou remova seus presets</span></div>
       <div class="timer-manager-list">
-        ${p.presets.map(x=>`<div class="timer-manager-row"><div><strong>${esc(x.name)}</strong><span>${x.work} min foco · ${x.brk} min pausa</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerPreset('${x.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn" title="Excluir timer" onclick="deleteTimerPreset('${x.id}')">🗑</button></div></div>`).join('')}
+        ${p.presets.map(x=>`<div class="timer-manager-row"><div><strong>${esc(x.name)}</strong><span>${x.work} min foco · ${x.brk} min pausa</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerPreset('${x.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir timer" aria-label="Excluir timer" onclick="deleteTimerPreset('${x.id}')">🗑</button></div></div>`).join('')}
       </div>
       <div class="timer-add-box">
         <div class="field-row">
@@ -2159,7 +2233,7 @@ function viewConfig(){
 
     <div class="card" style="margin-bottom:16px;max-width:900px;">
       <div class="section-title">Ciclos personalizados <span class="see-all">combine blocos diferentes e repita automaticamente</span></div>
-      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn" title="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
+      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir ciclo" aria-label="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
       <div class="timer-cycle-builder">
         <div class="field-row">
           <div class="field"><label>Nome do ciclo</label><input id="cycleName" value="Ciclo personalizado" maxlength="60"></div>
@@ -2207,7 +2281,20 @@ function addTimerPresetFromForm(){
   if(!name||!work||work<1){toast('Informe nome e tempo de foco');return;} addTimerPresetDirect(name,work,Number.isFinite(brk)?brk:5);
 }
 function deleteTimerPreset(id){
-  const p=STATE.settings.pomodoro; if(p.presets.length<=1){toast('Mantenha pelo menos um timer');return;} if(!confirm('Excluir este timer?'))return; p.presets=p.presets.filter(x=>x.id!==id); if(TIMER.presetId===id){const next=p.presets[0];TIMER.presetId=next.id;TIMER.planType='preset';resetTimer();} saveState();render();
+  const p=STATE.settings.pomodoro;
+  const item=p.presets.find(x=>x.id===id);
+  if(!item) return;
+  if(p.presets.length<=1){toast('Mantenha pelo menos um timer');return;}
+  showDeleteConfirm({
+    title:'Excluir timer?',
+    message:`O timer “${item.name}” será excluído.`,
+    detail:`${item.work} min de foco · ${item.brk} min de pausa.`,
+    onConfirm:()=>{
+      p.presets=p.presets.filter(x=>x.id!==id);
+      if(TIMER.presetId===id){const next=p.presets[0];TIMER.presetId=next.id;TIMER.planType='preset';resetTimer();}
+      saveState();render();toast('Timer excluído');
+    }
+  });
 }
 function addCycleBuilderStep(){
   const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="60" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
@@ -2219,7 +2306,21 @@ function saveCycleFromBuilder(){
   const steps=[...document.querySelectorAll('#cycleBuilderSteps .cycle-step-row')].map(r=>({work:Math.max(1,Math.min(180,Number(r.querySelector('.cycle-work').value)||25)),brk:Math.max(0,Math.min(60,Number(r.querySelector('.cycle-break').value)||0))}));
   if(!name||!steps.length){toast('Informe o nome e pelo menos uma etapa');return;} STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats,steps});saveState();render();toast('Ciclo salvo com sucesso');
 }
-function deleteTimerCycle(id){if(!confirm('Excluir este ciclo?'))return;STATE.settings.pomodoro.cycles=STATE.settings.pomodoro.cycles.filter(x=>x.id!==id);if(TIMER.cycleId===id){TIMER.planType='preset';TIMER.cycleId=null;const p=STATE.settings.pomodoro.presets[0];TIMER.presetId=p.id;resetTimer();}saveState();render();}
+function deleteTimerCycle(id){
+  const p=STATE.settings.pomodoro;
+  const item=p.cycles.find(x=>x.id===id);
+  if(!item) return;
+  showDeleteConfirm({
+    title:'Excluir ciclo?',
+    message:`O ciclo “${item.name}” será excluído.`,
+    detail:`${item.repeats} repetição(ões) · ${item.steps.map(st=>st.work+'/'+st.brk).join(' → ')}`,
+    onConfirm:()=>{
+      p.cycles=p.cycles.filter(x=>x.id!==id);
+      if(TIMER.cycleId===id){TIMER.planType='preset';TIMER.cycleId=null;const next=p.presets[0];TIMER.presetId=next.id;resetTimer();}
+      saveState();render();toast('Ciclo excluído');
+    }
+  });
+}
 function saveTerms(){
   STATE.settings.terms = {area:document.getElementById('cfgArea').value, sub:document.getElementById('cfgSub').value};
   saveState(); toast('Terminologia salva');
@@ -2309,6 +2410,53 @@ function closeModal(){
   const m = document.getElementById('activeModalOverlay');
   if(m) m.remove();
   document.removeEventListener('keydown', escCloseHandler);
+}
+
+/* =====================================================================
+   CONFIRMAÇÃO DE EXCLUSÃO
+===================================================================== */
+let DELETE_CONFIRM_CALLBACK = null;
+function showDeleteConfirm({title='Excluir item?', message='Este item será excluído.', detail='Esta ação não pode ser desfeita.', onConfirm}){
+  closeDeleteConfirm();
+  DELETE_CONFIRM_CALLBACK = typeof onConfirm==='function' ? onConfirm : null;
+  const overlay=document.createElement('div');
+  overlay.className='delete-confirm-overlay';
+  overlay.id='deleteConfirmOverlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-labelledby','deleteConfirmTitle');
+  overlay.innerHTML=`
+    <div class="delete-confirm-card">
+      <div class="delete-confirm-icon" aria-hidden="true">🗑</div>
+      <div class="delete-confirm-kicker">CONFIRMAÇÃO</div>
+      <h3 id="deleteConfirmTitle">${esc(title)}</h3>
+      <p>${esc(message)}</p>
+      <div class="delete-confirm-detail">${esc(detail)}</div>
+      <div class="delete-confirm-actions">
+        <button type="button" class="btn" data-delete-cancel>Cancelar</button>
+        <button type="button" class="btn btn-danger delete-confirm-submit"><span class="trash-icon">🗑</span> Excluir</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click',e=>{if(e.target===overlay)closeDeleteConfirm();});
+  overlay.querySelector('[data-delete-cancel]').addEventListener('click',closeDeleteConfirm);
+  overlay.querySelector('.delete-confirm-submit').addEventListener('click',()=>{
+    const cb=DELETE_CONFIRM_CALLBACK;
+    closeDeleteConfirm();
+    if(cb) cb();
+  });
+  document.body.appendChild(overlay);
+  document.addEventListener('keydown',deleteConfirmKeyHandler);
+  requestAnimationFrame(()=>{ overlay.classList.add('show'); overlay.querySelector('[data-delete-cancel]')?.focus(); });
+}
+function deleteConfirmKeyHandler(e){
+  if(e.key==='Escape') closeDeleteConfirm();
+  if(e.key==='Enter' && document.getElementById('deleteConfirmOverlay')) document.querySelector('.delete-confirm-submit')?.click();
+}
+function closeDeleteConfirm(){
+  const overlay=document.getElementById('deleteConfirmOverlay');
+  if(overlay){ overlay.classList.remove('show'); setTimeout(()=>overlay.remove(),120); }
+  DELETE_CONFIRM_CALLBACK=null;
+  document.removeEventListener('keydown',deleteConfirmKeyHandler);
 }
 
 /* =====================================================================
