@@ -76,7 +76,13 @@ function normalizeState(raw){
   const events=arr('events').slice(0,2000).map(x=>({id:cleanId(x?.id),title:String(x?.title||'').slice(0,300),date:cleanDate(x?.date)||todayISO(),type:String(x?.type||'evento').slice(0,80),topicId:topicIds.has(x?.topicId)?x.topicId:null}));
   const doubts=arr('doubts').slice(0,2000).map(x=>({id:cleanId(x?.id),question:String(x?.question||'').slice(0,1000),topicId:topicIds.has(x?.topicId)?x.topicId:null,explanation:String(x?.explanation||'').slice(0,3000),status:x?.status==='resolvida'?'resolvida':'aberta',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.question.trim());
   const flashcards=arr('flashcards').slice(0,5000).map(x=>({id:cleanId(x?.id),front:String(x?.front||'').slice(0,2000),back:String(x?.back||'').slice(0,5000),topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.front.trim()&&x.back.trim());
-  const questions=arr('questions').slice(0,5000).map(x=>({id:cleanId(x?.id),question:String(x?.question||'').slice(0,3000),answer:String(x?.answer||'').slice(0,8000),topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',tags:Array.isArray(x?.tags)?x.tags.slice(0,50).map(v=>String(v).slice(0,80)).filter(Boolean):[],status:x?.status==='inativa'?'inativa':'ativa',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.question.trim());
+  const questions=arr('questions').slice(0,5000).map(x=>{
+    const legacyQuestion=String(x?.question||'').slice(0,3000);
+    const legacyAnswer=String(x?.answer||'').slice(0,8000);
+    const qHtml=sanitizeNoteHtml(String(x?.questionHtml||'').trim() || `<p>${esc(legacyQuestion)}</p>`);
+    const aHtml=sanitizeNoteHtml(String(x?.answerHtml||'').trim() || (legacyAnswer.trim()?`<p>${esc(legacyAnswer)}</p>`:''));
+    return {id:cleanId(x?.id),question:legacyQuestion.slice(0,3000),answer:legacyAnswer.slice(0,8000),questionHtml:qHtml,answerHtml:aHtml,topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',tags:Array.isArray(x?.tags)?x.tags.slice(0,50).map(v=>String(v).slice(0,80)).filter(Boolean):[],status:x?.status==='inativa'?'inativa':'ativa',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()};
+  }).filter(x=>stripHtml(x.questionHtml).trim() || /<img\b/i.test(x.questionHtml));
   const settings=data.settings&&typeof data.settings==='object'?data.settings:{},terms=settings.terms&&typeof settings.terms==='object'?settings.terms:{},pom=settings.pomodoro&&typeof settings.pomodoro==='object'?settings.pomodoro:{};
   const intervals=Array.isArray(settings.reviewIntervals)?settings.reviewIntervals.map(Number).filter(Number.isFinite).map(x=>Math.max(1,Math.min(365,x))).slice(0,20):base.settings.reviewIntervals;
   const fallbackPresets=base.settings.pomodoro.presets;
@@ -132,7 +138,11 @@ function dateKey(value){const d=parseDateSafe(value);return d?d.toISOString().sl
 function daysBetween(a,b){const da=parseDateSafe(a),db=parseDateSafe(b);return da&&db?Math.round((da-db)/86400000):null;}
 function fmtDate(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'}):'Data inválida';}
 function fmtDateShort(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Data inválida';}
-function sanitizeNoteHtml(html){const t=document.createElement('template');t.innerHTML=String(html||'');t.content.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link,svg,math,template').forEach(el=>el.remove());const tags=new Set(['B','STRONG','I','EM','U','S','BR','P','DIV','SPAN','UL','OL','LI','BLOCKQUOTE','PRE','CODE','HR','A','IMG','H1','H2','H3','H4','SUB','SUP']);const attrs={A:new Set(['href','target','rel','title']),IMG:new Set(['src','alt','title','width','height'])};const w=document.createTreeWalker(t.content,NodeFilter.SHOW_ELEMENT),nodes=[];while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(el=>{if(!tags.has(el.tagName)){el.replaceWith(...Array.from(el.childNodes));return;}[...el.attributes].forEach(a=>{const n=a.name.toLowerCase();if(n.startsWith('on')||!attrs[el.tagName]?.has(n)){el.removeAttribute(a.name);return;}if(n==='href'||n==='src'){try{const u=new URL(a.value,document.baseURI);if(!['http:','https:','mailto:'].includes(u.protocol))el.removeAttribute(a.name);else el.setAttribute(a.name,u.href);}catch{el.removeAttribute(a.name);}}});if(el.tagName==='A'){el.setAttribute('target','_blank');el.setAttribute('rel','noopener noreferrer nofollow');}});return t.innerHTML;}
+function sanitizeNoteHtml(html){const t=document.createElement('template');t.innerHTML=String(html||'');t.content.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link,svg,math,template').forEach(el=>el.remove());const tags=new Set(['B','STRONG','I','EM','U','S','BR','P','DIV','SPAN','UL','OL','LI','BLOCKQUOTE','PRE','CODE','HR','A','IMG','H1','H2','H3','H4','SUB','SUP']);const attrs={A:new Set(['href','target','rel','title']),IMG:new Set(['src','alt','title','width','height'])};const w=document.createTreeWalker(t.content,NodeFilter.SHOW_ELEMENT),nodes=[];while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(el=>{if(!tags.has(el.tagName)){el.replaceWith(...Array.from(el.childNodes));return;}[...el.attributes].forEach(a=>{const n=a.name.toLowerCase();if(n.startsWith('on')||!attrs[el.tagName]?.has(n)){el.removeAttribute(a.name);return;}if(n==='href'||n==='src'){
+const raw=String(a.value||'').trim();
+if(n==='src' && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(raw) && raw.length<=1400000){el.setAttribute(a.name,raw);return;}
+try{const u=new URL(raw,document.baseURI);if(!['http:','https:','mailto:'].includes(u.protocol))el.removeAttribute(a.name);else el.setAttribute(a.name,u.href);}catch{el.removeAttribute(a.name);}
+}});if(el.tagName==='A'){el.setAttribute('target','_blank');el.setAttribute('rel','noopener noreferrer nofollow');}});return t.innerHTML;}
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function stripHtml(html){ const d=document.createElement('div'); d.innerHTML=html||''; return d.textContent||''; }
 function toast(msg){
@@ -1866,12 +1876,12 @@ function viewQuestoes(){
 
 
                                 <div class="question-card-text">
-                                    ${esc(q.question)}
+                                    ${sanitizeNoteHtml(q.questionHtml||`<p>${esc(q.question||'')}</p>`)}
                                 </div>
 
 
                                 ${
-                                    q.answer
+                                    (q.answerHtml||q.answer)
 
                                     ? `
                                         <div class="question-answer-preview">
@@ -2003,41 +2013,277 @@ function backToQuestionDifficulties() {
   }*/
 
 
+let QUESTION_EDITOR_RANGES = {};
+let QUESTION_EDITOR_ACTIVE = null;
+
+function questionEditorValue(question, key){
+  const htmlKey = key==='question'?'questionHtml':'answerHtml';
+  const legacyKey = key==='question'?'question':'answer';
+  const value = String(question?.[htmlKey]||'').trim();
+  return value || (question?.[legacyKey] ? `<p>${esc(question[legacyKey])}</p>` : '');
+}
+function questionEditorRemember(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const sel=window.getSelection();
+  if(!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) return;
+  QUESTION_EDITOR_RANGES[id]=sel.getRangeAt(0).cloneRange();
+  QUESTION_EDITOR_ACTIVE=id;
+}
+function questionEditorRestore(id){
+  const el=document.getElementById(id);
+  if(!el) return false;
+  const sel=window.getSelection();
+  sel.removeAllRanges();
+  const saved=QUESTION_EDITOR_RANGES[id];
+  if(saved){
+    try{sel.addRange(saved);el.focus();return true;}catch{}
+  }
+  el.focus();
+  const range=document.createRange();
+  range.selectNodeContents(el);range.collapse(false);
+  sel.removeAllRanges();sel.addRange(range);
+  QUESTION_EDITOR_RANGES[id]=range.cloneRange();
+  return true;
+}
+function questionEditorExec(id,cmd,value=null){
+  questionEditorRestore(id);
+  try{document.execCommand(cmd,false,value);}catch{}
+  questionEditorRemember(id);
+}
+function questionEditorInsertHtml(id,html){
+  if(!questionEditorRestore(id)) return;
+  let inserted=false;
+  try{inserted=document.execCommand('insertHTML',false,html);}catch{}
+  if(!inserted){
+    const sel=window.getSelection();
+    if(sel.rangeCount){
+      const range=sel.getRangeAt(0);
+      range.deleteContents();
+      const wrap=document.createElement('div');wrap.innerHTML=html;
+      const frag=document.createDocumentFragment();
+      while(wrap.firstChild)frag.appendChild(wrap.firstChild);
+      range.insertNode(frag);range.collapse(false);sel.removeAllRanges();sel.addRange(range);
+    }
+  }
+  questionEditorRemember(id);
+}
+function questionEditorLink(id){
+  questionEditorRestore(id);
+  const url=prompt('URL do link:');
+  if(url) questionEditorExec(id,'createLink',url.trim());
+}
+function questionEditorImageUrl(id){
+  questionEditorRestore(id);
+  const url=prompt('URL da imagem:');
+  if(!url) return;
+  questionEditorInsertHtml(id,`<img src="${esc(url.trim())}" alt="Imagem da questão">`);
+}
+function questionEditorTriggerImage(id){
+  QUESTION_EDITOR_ACTIVE=id;
+  questionEditorRemember(id);
+  const input=document.getElementById(id+'ImageInput');
+  if(input) input.click();
+}
+function questionEditorHandleImageInput(id,input){
+  const files=[...(input?.files||[])];
+  if(input) input.value='';
+  if(!files.length) return;
+  questionEditorHandleImages(id,files);
+}
+function questionEditorHandleImages(id,files){
+  files.filter(f=>/^image\//i.test(f.type)).slice(0,5).forEach(file=>{
+    questionEditorCompressImage(file).then(dataUrl=>{
+      if(dataUrl) questionEditorInsertHtml(id,`<img src="${dataUrl}" alt="Imagem inserida">`);
+    }).catch(()=>toast('Não foi possível inserir uma das imagens.'));
+  });
+}
+function questionEditorCompressImage(file){
+  return new Promise((resolve,reject)=>{
+    if(!file || !/^image\//i.test(file.type)) return reject(new Error('Formato inválido'));
+    if(file.size>12*1024*1024) return reject(new Error('Imagem muito grande'));
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('Leitura falhou'));
+    reader.onload=()=>{
+      const src=String(reader.result||'');
+      const img=new Image();
+      img.onload=()=>{
+        const maxW=1400,maxH=1400;
+        const scale=Math.min(1,maxW/img.width,maxH/img.height);
+        const w=Math.max(1,Math.round(img.width*scale));
+        const h=Math.max(1,Math.round(img.height*scale));
+        const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext('2d');
+        if(!ctx) return resolve(src.length<=1400000?src:'');
+        ctx.drawImage(img,0,0,w,h);
+        let out=canvas.toDataURL('image/webp',0.82);
+        if(!out.startsWith('data:image/webp')) out=canvas.toDataURL('image/jpeg',0.82);
+        if(out.length>1400000) out=canvas.toDataURL('image/jpeg',0.72);
+        if(out.length>1400000){toast('A imagem ainda ficou muito grande. Tente uma imagem menor.');return resolve('');}
+        resolve(out);
+      };
+      img.onerror=()=>reject(new Error('Imagem inválida'));
+      img.src=src;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+function questionEditorPaste(event,id){
+  const items=[...(event.clipboardData?.items||[])];
+  const imageItem=items.find(item=>item.type && item.type.startsWith('image/'));
+  if(!imageItem) return;
+  event.preventDefault();
+  questionEditorRemember(id);
+  const file=imageItem.getAsFile();
+  if(file) questionEditorHandleImages(id,[file]);
+}
+function questionEditorDrop(event,id){
+  event.preventDefault();
+  const files=[...(event.dataTransfer?.files||[])].filter(f=>f.type.startsWith('image/'));
+  if(!files.length) return;
+  questionEditorRemember(id);
+  questionEditorHandleImages(id,files);
+  document.getElementById(id)?.classList.remove('drag-over');
+}
+function questionEditorDragOver(event,id){
+  event.preventDefault();
+  QUESTION_EDITOR_ACTIVE=id;
+  document.getElementById(id)?.classList.add('drag-over');
+}
+function questionEditorDragLeave(id){document.getElementById(id)?.classList.remove('drag-over');}
+
+function questionEditorToolbar(id){
+  const btn=(label,title,action,icon=label)=>`<button type="button" title="${title}" aria-label="${title}" onmousedown="event.preventDefault()" onclick="${action}">${icon}</button>`;
+  return `<div class="editor-toolbar question-editor-toolbar">
+    ${btn('H2','Título da questão',`questionEditorExec('${id}','formatBlock','H2')`)}
+    ${btn('H3','Subtítulo',`questionEditorExec('${id}','formatBlock','H3')`)}
+    <div class="sep"></div>
+    ${btn('B','Negrito',`questionEditorExec('${id}','bold')`,'<b>B</b>')}
+    ${btn('I','Itálico',`questionEditorExec('${id}','italic')`,'<i>I</i>')}
+    ${btn('U','Sublinhado',`questionEditorExec('${id}','underline')`,'<u>U</u>')}
+    ${btn('S','Tachado',`questionEditorExec('${id}','strikeThrough')`,'<s>S</s>')}
+    <div class="sep"></div>
+    ${btn('•≡','Lista com marcadores',`questionEditorExec('${id}','insertUnorderedList')`)}
+    ${btn('1≡','Lista numerada',`questionEditorExec('${id}','insertOrderedList')`)}
+    ${btn('❝','Citação',`questionEditorExec('${id}','formatBlock','BLOCKQUOTE')`)}
+    ${btn('&lt;/&gt;','Código',`questionEditorExec('${id}','formatBlock','PRE')`)}
+    <div class="sep"></div>
+    ${btn('A₊','Sobrescrito',`questionEditorExec('${id}','superscript')`)}
+    ${btn('A₋','Subscrito',`questionEditorExec('${id}','subscript')`)}
+    ${btn('L','Alinhar à esquerda',`questionEditorExec('${id}','justifyLeft')`)}
+    ${btn('C','Centralizar',`questionEditorExec('${id}','justifyCenter')`)}
+    ${btn('R','Alinhar à direita',`questionEditorExec('${id}','justifyRight')`)}
+    <div class="sep"></div>
+    ${btn('🔗','Inserir link',`questionEditorLink('${id}')`)}
+    ${btn('🖼️','Inserir imagem ou tirar foto',`questionEditorTriggerImage('${id}')`)}
+    ${btn('🌐','Inserir imagem por URL',`questionEditorImageUrl('${id}')`)}
+    ${btn('―','Separador',`questionEditorExec('${id}','insertHorizontalRule')`)}
+    <div class="sep"></div>
+    ${btn('⨯','Limpar formatação',`questionEditorExec('${id}','removeFormat')`)}
+  </div>`;
+}
+function questionRichEditor(id,value,placeholder){
+  return `<div class="question-editor-wrap">
+    ${questionEditorToolbar(id)}
+    <input id="${id}ImageInput" class="question-editor-image-input" type="file" accept="image/*" capture="environment" multiple onchange="questionEditorHandleImageInput('${id}',this)">
+    <div class="editor-body question-editor-body" id="${id}" contenteditable="true" spellcheck="true" data-placeholder="${placeholder}" onfocus="questionEditorRemember('${id}')" onmouseup="questionEditorRemember('${id}')" onkeyup="questionEditorRemember('${id}')" oninput="questionEditorRemember('${id}')" onpaste="questionEditorPaste(event,'${id}')" ondragover="questionEditorDragOver(event,'${id}')" ondragleave="questionEditorDragLeave('${id}')" ondrop="questionEditorDrop(event,'${id}')">${value||''}</div>
+  </div>`;
+}
+
 function openQuestionModal(id=null){
-  const editing = id? STATE.questions.find(q=>q.id===id): null;
+  const editing=id?STATE.questions.find(q=>q.id===id):null;
+  QUESTION_EDITOR_RANGES={};QUESTION_EDITOR_ACTIVE=null;
   showModal(`
-    <div class="modal-head"><h2>${editing?'Editar questão':'Nova questão'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
-    <div class="field field-especial"><label>Pergunta</label><textarea id="mQQuestion" rows="10" autofocus>${editing?esc(editing.question):''}</textarea></div>
-    <div class="field field-especial"><label>Resposta</label><textarea id="mQAnswer" rows="10">${editing?esc(editing.answer):''}</textarea></div>
-    <div class="field-row">
-      <div class="field"><label>Área / Tópico</label><select id="mQTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
-      <div class="field"><label>Dificuldade</label><select id="mQDiff">
-        <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
-        <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
-        <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
-      </select></div>
+    <div class="question-modal-head">
+      <div>
+        <div class="question-modal-kicker">${editing?'EDITAR QUESTÃO':'NOVA QUESTÃO'}</div>
+        <h2>${editing?'Editar questão':'Criar questão'}</h2>
+        <p>Monte o enunciado e o gabarito com texto formatado, imagens e links.</p>
+      </div>
+      <button class="icon-btn question-modal-close" onclick="closeModal()" aria-label="Fechar">✕</button>
     </div>
-    <div class="field"><label>Tags</label><input id="mQTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="separadas por vírgula"></div>
-    <div class="modal-actions">
+
+    <section class="question-form-section question-content-section">
+      <div class="question-section-head">
+        <div>
+          <span class="question-section-icon">❓</span>
+          <div>
+            <h3>Questão</h3>
+            <p>Enunciado, alternativas, imagens ou informações de apoio.</p>
+          </div>
+        </div>
+        <span class="question-section-tag">Enunciado</span>
+      </div>
+      ${questionRichEditor('mQQuestionEditor',questionEditorValue(editing,'question'),'Digite o enunciado da questão...')}
+    </section>
+
+    <section class="question-form-section question-content-section">
+      <div class="question-section-head">
+        <div>
+          <span class="question-section-icon answer">✓</span>
+          <div>
+            <h3>Resposta / Gabarito</h3>
+            <p>Explique a resposta com o nível de detalhe necessário para sua revisão.</p>
+          </div>
+        </div>
+        <span class="question-section-tag answer">Gabarito</span>
+      </div>
+      ${questionRichEditor('mQAnswerEditor',questionEditorValue(editing,'answer'),'Digite a resposta, explicação ou gabarito...')}
+    </section>
+
+    <section class="question-form-section question-meta-section">
+      <div class="question-section-head compact">
+        <div>
+          <span class="question-section-icon meta">⚙</span>
+          <div>
+            <h3>Classificação</h3>
+            <p>Organize a questão para encontrar e revisar depois.</p>
+          </div>
+        </div>
+      </div>
+      <div class="question-meta-grid">
+        <div class="field question-meta-field">
+          <label>Área / Tópico</label>
+          <select id="mQTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select>
+        </div>
+        <div class="field question-meta-field">
+          <label>Dificuldade</label>
+          <select id="mQDiff">
+            <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
+            <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
+            <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
+          </select>
+        </div>
+      </div>
+      <div class="field question-tags-field">
+        <label>Tags</label>
+        <input id="mQTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="Ex.: fisiologia, anatomia, prova 1">
+      </div>
+    </section>
+
+    <div class="modal-actions question-modal-actions">
       ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteQuestion('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
       <button class="btn" onclick="closeModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="saveQuestion('${id||''}')">Salvar</button>
+      <button class="btn btn-primary" onclick="saveQuestion('${id||''}')">Salvar questão</button>
     </div>
-  `);
+  `, true, 'question-modal');
 }
 function saveQuestion(id){
-  const question = document.getElementById('mQQuestion').value.trim();
-  if(!question){ toast('Escreva a pergunta'); return; }
-  const answer = document.getElementById('mQAnswer').value;
-  const topicId = document.getElementById('mQTopic').value || null;
-  const difficulty = document.getElementById('mQDiff').value;
-  const tags = document.getElementById('mQTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  const questionHtml=sanitizeNoteHtml(document.getElementById('mQQuestionEditor').innerHTML);
+  const answerHtml=sanitizeNoteHtml(document.getElementById('mQAnswerEditor').innerHTML);
+  const question=stripHtml(questionHtml).replace(/\s+/g,' ').trim();
+  const answer=stripHtml(answerHtml).replace(/\s+/g,' ').trim();
+  if(!question && !questionHtml.includes('<img')){toast('Escreva a questão ou insira uma imagem');return;}
+  const topicId=document.getElementById('mQTopic').value||null;
+  const difficulty=document.getElementById('mQDiff').value;
+  const tags=document.getElementById('mQTags').value.split(',').map(t=>t.trim()).filter(Boolean);
   if(id){
-    Object.assign(STATE.questions.find(q=>q.id===id), {question,answer,topicId,difficulty,tags});
+    const item=STATE.questions.find(q=>q.id===id); if(!item)return;
+    Object.assign(item,{question,answer,questionHtml,answerHtml,topicId,difficulty,tags});
   } else {
-    STATE.questions.push({id:uid(),question,answer,topicId,difficulty,tags,status:'ativa',createdAt:new Date().toISOString()});
+    STATE.questions.push({id:uid(),question,answer,questionHtml,answerHtml,topicId,difficulty,tags,status:'ativa',createdAt:new Date().toISOString()});
   }
-  saveState(); closeModal(); render(); toast('Questão salva');
+  saveState();closeModal();render();toast('Questão salva');
 }
 function deleteQuestion(id){
   const question = STATE.questions.find(x=>x.id===id);

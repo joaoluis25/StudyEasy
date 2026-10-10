@@ -61,6 +61,14 @@ function defaultState(){
 }
 let STATE = defaultState();
 
+// Ciclos personalizados aceitam foco e pausa de até 180 minutos cada.
+// Mantemos essa regra centralizada para a UI, o salvamento e a leitura dos dados.
+function normalizeCycleMinute(value, fallback, min=0){
+  if(value===null || value===undefined || String(value).trim()==='') return fallback;
+  const n=Number(value);
+  if(!Number.isFinite(n)) return fallback;
+  return Math.round(Math.max(min,Math.min(180,n)));
+}
 function normalizeState(raw){
   const base=defaultState(), data=raw&&typeof raw==='object'?raw:{};
   const arr=k=>Array.isArray(data[k])?data[k]:[];
@@ -96,7 +104,7 @@ function normalizeState(raw){
     id:typeof c?.id==='string'&&c.id?c.id:uid(),
     name:String(c?.name||`Ciclo ${i+1}`).slice(0,60),
     repeats:Math.max(1,Math.min(20,Number(c?.repeats)||1)),
-    steps:Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:Math.max(1,Math.min(180,Number(st?.work)||25)),brk:Math.max(0,Math.min(60,Number(st?.brk)||5))})).filter(st=>st.work>0):[]
+    steps:Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:normalizeCycleMinute(st?.work,25,1),brk:normalizeCycleMinute(st?.brk,5,0)})).filter(st=>st.work>0):[]
   })).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
   const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
   const legacyBrk=Math.max(0,Math.min(60,Number(pom.brk)||5));
@@ -2495,7 +2503,7 @@ function viewConfig(){
         </div>
         <div class="cycle-builder-head"><strong>Etapas</strong><button class="btn btn-sm" onclick="addCycleBuilderStep()">+ Adicionar etapa</button></div>
         <div id="cycleBuilderSteps">
-          <div class="cycle-step-row"><span class="cycle-step-number">1</span><input type="number" class="cycle-work" min="1" max="180" value="60" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="60" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>
+          <div class="cycle-step-row"><span class="cycle-step-number">1</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="60" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>
         </div>
         <button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="saveCycleFromBuilder()">Salvar ciclo</button>
       </div>
@@ -2551,14 +2559,32 @@ function deleteTimerPreset(id){
   });
 }
 function addCycleBuilderStep(){
-  const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="60" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
+  const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
 }
 function removeCycleBuilderStep(btn){const wrap=document.getElementById('cycleBuilderSteps');if(!wrap||wrap.children.length<=1){toast('O ciclo precisa ter pelo menos uma etapa');return;}btn.closest('.cycle-step-row').remove();renumberCycleBuilder();}
 function renumberCycleBuilder(){document.querySelectorAll('#cycleBuilderSteps .cycle-step-row').forEach((r,i)=>r.querySelector('.cycle-step-number').textContent=i+1);}
 function saveCycleFromBuilder(){
-  const name=document.getElementById('cycleName').value.trim(); const repeats=Math.max(1,Math.min(20,Number(document.getElementById('cycleRepeats').value)||1));
-  const steps=[...document.querySelectorAll('#cycleBuilderSteps .cycle-step-row')].map(r=>({work:Math.max(1,Math.min(180,Number(r.querySelector('.cycle-work').value)||25)),brk:Math.max(0,Math.min(60,Number(r.querySelector('.cycle-break').value)||0))}));
-  if(!name||!steps.length){toast('Informe o nome e pelo menos uma etapa');return;} STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats,steps});saveState();render();toast('Ciclo salvo com sucesso');
+  const name=document.getElementById('cycleName').value.trim();
+  const repeatsRaw=document.getElementById('cycleRepeats').value.trim();
+  const repeatsNumber=Number(repeatsRaw);
+  if(!name){toast('Informe o nome do ciclo');document.getElementById('cycleName').focus();return;}
+  if(!Number.isInteger(repeatsNumber)||repeatsNumber<1||repeatsNumber>20){toast('As repetições devem ser um número entre 1 e 20');document.getElementById('cycleRepeats').focus();return;}
+  const rows=[...document.querySelectorAll('#cycleBuilderSteps .cycle-step-row')];
+  if(!rows.length){toast('Adicione pelo menos uma etapa ao ciclo');return;}
+  const steps=[];
+  for(const row of rows){
+    const workInput=row.querySelector('.cycle-work');
+    const breakInput=row.querySelector('.cycle-break');
+    const workRaw=workInput.value.trim();
+    const breakRaw=breakInput.value.trim();
+    const work=Number(workRaw);
+    const brk=Number(breakRaw);
+    if(workRaw===''||!Number.isInteger(work)||work<1||work>180){toast('O foco deve ser um número inteiro entre 1 e 180 minutos');workInput.focus();return;}
+    if(breakRaw===''||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos');breakInput.focus();return;}
+    steps.push({work,brk});
+  }
+  STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats:repeatsNumber,steps});
+  saveState();render();toast('Ciclo salvo com sucesso');
 }
 function deleteTimerCycle(id){
   const p=STATE.settings.pomodoro;
