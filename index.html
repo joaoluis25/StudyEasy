@@ -100,19 +100,52 @@ function normalizeState(raw){
     work:Math.max(1,Math.min(180,Number(p?.work)||25)),
     brk:Math.max(0,Math.min(60,Number(p?.brk)||5))
   })).filter(p=>p.name.trim()):fallbackPresets;
-  const cycles=Array.isArray(pom.cycles)?pom.cycles.slice(0,20).map((c,i)=>({
-    id:typeof c?.id==='string'&&c.id?c.id:uid(),
-    name:String(c?.name||`Ciclo ${i+1}`).slice(0,60),
-    repeats:Math.max(1,Math.min(20,Number(c?.repeats)||1)),
-    steps:Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:normalizeCycleMinute(st?.work,25,1),brk:normalizeCycleMinute(st?.brk,5,0)})).filter(st=>st.work>0):[]
-  })).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
+  const cycles=Array.isArray(pom.cycles)?pom.cycles.slice(0,20).map((c,i)=>{
+    const name=String(c?.name||`Ciclo ${i+1}`).slice(0,60);
+    const repeats=Math.max(1,Math.min(20,Number(c?.repeats)||1));
+    const steps=Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:normalizeCycleMinute(st?.work,25,1),brk:normalizeCycleMinute(st?.brk,5,0)})).filter(st=>st.work>0):[];
+
+    // Migra ciclos antigos cujo foco/pausa foi truncado em 60 min antes da correção.
+    // Só aplica quando o próprio nome descreve precisamente repetições e tempos (ex.: "5×70/30"),
+    // há uma única etapa, o número de repetições confere e os valores salvos coincidem com os
+    // valores do nome, exceto pelos campos que ficaram presos em 60.
+    const declared=name.match(/^\s*(\d+)\s*[x×]\s*(\d+)\s*\/\s*(\d+)\s*$/i);
+    if(declared && steps.length===1){
+      const [,repText,workText,breakText]=declared;
+      const declaredRepeats=Number(repText), declaredWork=Number(workText), declaredBreak=Number(breakText);
+      const step=steps[0];
+      const workMatches=step.work===declaredWork || (step.work===60 && declaredWork>60 && declaredWork<=180);
+      const breakMatches=step.brk===declaredBreak || (step.brk===60 && declaredBreak>60 && declaredBreak<=180);
+      const hasLegacyCap=(step.work===60 && declaredWork>60 && declaredWork<=180) || (step.brk===60 && declaredBreak>60 && declaredBreak<=180);
+      if(declaredRepeats===repeats && workMatches && breakMatches && hasLegacyCap){
+        step.work=declaredWork;
+        step.brk=declaredBreak;
+      }
+    }
+    return {id:typeof c?.id==='string'&&c.id?c.id:uid(),name,repeats,steps};
+  }).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
   const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
   const legacyBrk=Math.max(0,Math.min(60,Number(pom.brk)||5));
   return {...base,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
 }
 async function loadState(){
   if(!CURRENT_USER)return;
-  try{const {data,error}=await sb.from('study_data').select('data').eq('user_id',CURRENT_USER.id).maybeSingle();if(error)throw error;STATE=normalizeState(data?.data);}
+  try{
+    const {data,error}=await sb.from('study_data').select('data').eq('user_id',CURRENT_USER.id).maybeSingle();
+    if(error)throw error;
+    const raw=data?.data||{};
+    const normalized=normalizeState(raw);
+    const rawCycles=raw?.settings?.pomodoro?.cycles;
+    const repairedLegacyCycle=Array.isArray(rawCycles)&&normalized.settings.pomodoro.cycles.some(cycle=>{
+      const previous=rawCycles.find(item=>item&&item.id===cycle.id);
+      return !!previous&&Array.isArray(previous.steps)&&cycle.steps.some((step,index)=>
+        Number(previous.steps[index]?.work)!==step.work || Number(previous.steps[index]?.brk)!==step.brk
+      );
+    });
+    STATE=normalized;
+    // Persiste uma única correção dos ciclos antigos truncados em 60 minutos.
+    if(repairedLegacyCycle)saveState();
+  }
   catch(e){console.error('Erro ao carregar dados do Supabase',e);STATE=defaultState();toast('Não foi possível carregar seus dados. Verifique sua conexão.');}
 }
 function saveState(){
@@ -224,6 +257,7 @@ let TIMER = {
   planType:'preset', presetId:'p25', cycleId:null, cycleSteps:[], cycleRepeats:1,
   cycleStepIndex:0, cycleRound:1, currentWorkMinutes:25, currentBreakMinutes:5
 };
+let CYCLE_EDITING_ID = null;
 
 const ROUTES = [
   {id:'dashboard', label:'Dashboard', ic:'🏠'},
@@ -1122,7 +1156,7 @@ function viewSessoes(){
   const sessions = STATE.sessions.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,40);
   const p=STATE.settings.pomodoro;
   const activeLabel=TIMER.planType==='cycle'
-    ? `${TIMER.cycleId?esc((p.cycles.find(c=>c.id===TIMER.cycleId)||{}).name||'Ciclo'): 'Ciclo'} · ${TIMER.cycleRound}/${TIMER.cycleRepeats}`
+    ? `${TIMER.cycleId?esc((p.cycles.find(c=>c.id===TIMER.cycleId)||{}).name||'Ciclo'): 'Ciclo'} · foco ${TIMER.currentWorkMinutes} min / pausa ${TIMER.currentBreakMinutes} min · ${TIMER.cycleRound}/${TIMER.cycleRepeats}`
     : esc((p.presets.find(x=>x.id===TIMER.presetId)||{}).name||'Timer');
   return `
     <div class="grid sessions-page-grid">
@@ -2495,7 +2529,7 @@ function viewConfig(){
 
     <div class="card" style="margin-bottom:16px;max-width:900px;">
       <div class="section-title">Ciclos personalizados <span class="see-all">combine blocos diferentes e repita automaticamente</span></div>
-      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir ciclo" aria-label="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
+      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="editTimerCycle('${c.id}')">✎ Editar</button><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir ciclo" aria-label="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
       <div class="timer-cycle-builder">
         <div class="field-row">
           <div class="field"><label>Nome do ciclo</label><input id="cycleName" value="Ciclo personalizado" maxlength="60"></div>
@@ -2505,7 +2539,7 @@ function viewConfig(){
         <div id="cycleBuilderSteps">
           <div class="cycle-step-row"><span class="cycle-step-number">1</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="60" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>
         </div>
-        <button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="saveCycleFromBuilder()">Salvar ciclo</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center;"><button id="cycleSaveBtn" class="btn btn-primary btn-sm" onclick="saveCycleFromBuilder()">Salvar ciclo</button><button id="cycleEditCancelBtn" class="btn btn-sm" style="display:none;" onclick="cancelCycleEdit()">Cancelar edição</button></div>
       </div>
     </div>
 
@@ -2558,6 +2592,28 @@ function deleteTimerPreset(id){
     }
   });
 }
+function editTimerCycle(id){
+  const cycle=STATE.settings.pomodoro.cycles.find(c=>c.id===id);
+  if(!cycle)return;
+  const nameInput=document.getElementById('cycleName');
+  const repeatsInput=document.getElementById('cycleRepeats');
+  const wrap=document.getElementById('cycleBuilderSteps');
+  if(!nameInput||!repeatsInput||!wrap)return;
+  CYCLE_EDITING_ID=id;
+  nameInput.value=cycle.name;
+  repeatsInput.value=cycle.repeats;
+  wrap.innerHTML=cycle.steps.map((step,i)=>`<div class="cycle-step-row"><span class="cycle-step-number">${i+1}</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="${step.work}" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="${step.brk}" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>`).join('');
+  const saveBtn=document.getElementById('cycleSaveBtn');
+  if(saveBtn)saveBtn.textContent='Salvar alterações';
+  const cancelBtn=document.getElementById('cycleEditCancelBtn');
+  if(cancelBtn)cancelBtn.style.display='inline-flex';
+  wrap.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function cancelCycleEdit(){
+  CYCLE_EDITING_ID=null;
+  render();
+  toast('Edição cancelada');
+}
 function addCycleBuilderStep(){
   const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
 }
@@ -2583,8 +2639,22 @@ function saveCycleFromBuilder(){
     if(breakRaw===''||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos');breakInput.focus();return;}
     steps.push({work,brk});
   }
-  STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats:repeatsNumber,steps});
-  saveState();render();toast('Ciclo salvo com sucesso');
+  if(CYCLE_EDITING_ID){
+    const cycle=STATE.settings.pomodoro.cycles.find(c=>c.id===CYCLE_EDITING_ID);
+    if(!cycle){CYCLE_EDITING_ID=null;toast('Não foi possível localizar o ciclo para atualizar');return;}
+    Object.assign(cycle,{name,repeats:repeatsNumber,steps});
+    // Se o ciclo editado está selecionado, sincroniza imediatamente o cronômetro com os novos valores.
+    if(TIMER.planType==='cycle'&&TIMER.cycleId===cycle.id){
+      clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;
+      TIMER.cycleSteps=steps.map(step=>({...step}));TIMER.cycleRepeats=repeatsNumber;
+      TIMER.cycleStepIndex=0;TIMER.cycleRound=1;TIMER.mode='work';
+      TIMER.currentWorkMinutes=steps[0].work;TIMER.currentBreakMinutes=steps[0].brk;TIMER.remaining=steps[0].work*60;
+    }
+    CYCLE_EDITING_ID=null;saveState();render();toast('Ciclo atualizado com sucesso');
+  }else{
+    STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats:repeatsNumber,steps});
+    saveState();render();toast('Ciclo salvo com sucesso');
+  }
 }
 function deleteTimerCycle(id){
   const p=STATE.settings.pomodoro;

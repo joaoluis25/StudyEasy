@@ -1138,7 +1138,7 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible{outline:2px soli
   max-width:860px;
   padding:24px;
 }
-.question-modal-overlay{}
+
 .question-modal-head{
   display:flex;
   align-items:flex-start;
