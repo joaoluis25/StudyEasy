@@ -100,7 +100,7 @@ function normalizeState(raw){
     const status=rawStatus==='concluida'?'concluida':(['pausada','paused'].includes(rawStatus)?'pausada':'andamento');
     const rawPriority=String(g?.priority||'normal').toLowerCase();
     const priority=(rawPriority==='alta'||rawPriority==='high')?'alta':((rawPriority==='baixa'||rawPriority==='low')?'baixa':'normal');
-    return {id:cleanId(g?.id),title:String(g?.title||'').slice(0,300),description:String(g?.description||'').slice(0,2000),deadline:cleanDate(g?.deadline),priority,topicId:topicIds.has(g?.topicId)?g.topicId:null,status,checklist:checklist(g?.checklist),progress:Math.max(0,Math.min(100,Number(g?.progress)||0)),createdAt:cleanTimestamp(g?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(g?.updatedAt)||cleanTimestamp(g?.createdAt)||new Date().toISOString()};
+    return {id:cleanId(g?.id),title:String(g?.title||'').slice(0,300),description:String(g?.description||'').slice(0,2000),deadline:cleanDate(g?.deadline),priority,rank:Math.max(0,Math.min(999999,Number(g?.rank)||0)),topicId:topicIds.has(g?.topicId)?g.topicId:null,status,checklist:checklist(g?.checklist),progress:Math.max(0,Math.min(100,Number(g?.progress)||0)),createdAt:cleanTimestamp(g?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(g?.updatedAt)||cleanTimestamp(g?.createdAt)||new Date().toISOString()};
   });
   const sessions=arr('sessions').slice(0,5000).map(x=>({id:cleanId(x?.id),topicId:topicIds.has(x?.topicId)?x.topicId:null,date:cleanDate(x?.date)||todayISO(),duration:Math.max(0,Math.min(1440,Number(x?.duration)||0)),observation:String(x?.observation||'').slice(0,2000),createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()}));
   const events=arr('events').slice(0,2000).map(x=>({id:cleanId(x?.id),title:String(x?.title||'').slice(0,300),date:cleanDate(x?.date)||todayISO(),type:String(x?.type||'evento').slice(0,80),topicId:topicIds.has(x?.topicId)?x.topicId:null}));
@@ -1131,7 +1131,7 @@ function saveNote(id, forDate){
       updatedAt: now
     });
   }
-  saveState(); closeModal(); render(); toast('Anotação salva');
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Anotação salva');
 }
 function deleteNote(id){
   const note = STATE.notes.find(x=>x.id===id);
@@ -1147,49 +1147,23 @@ function deleteNote(id){
 /* =====================================================================
    METAS
 ===================================================================== */
+function goalPriorityScore(g){return {alta:0,normal:1,baixa:2}[g.priority]??1;}
+function moveGoalRank(id,delta){
+  const goal=STATE.goals.find(g=>g.id===id);if(!goal)return;
+  const peers=STATE.goals.filter(g=>g.topicId===goal.topicId&&g.priority===goal.priority).sort((a,b)=>(a.rank||0)-(b.rank||0)||(a.createdAt||'').localeCompare(b.createdAt||''));
+  const i=peers.findIndex(g=>g.id===id),j=i+delta;if(j<0||j>=peers.length)return;
+  [peers[i],peers[j]]=[peers[j],peers[i]];peers.forEach((g,n)=>g.rank=n+1);saveState();render();
+}
 function viewMetas(){
-  const goals = STATE.goals.slice().sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
-  return `
-    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
-      <button class="btn btn-primary" onclick="openGoalModal()">+ Nova meta</button>
-    </div>
-    ${goals.length===0? `<div class="card"><div class="empty-state"><div class="ic">🎯</div><div class="t">Nenhuma meta criada</div><div class="d">Metas ajudam a dar direção aos seus estudos — grandes ou pequenas.</div></div></div>` :
-    `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(350px,1fr));">
-      ${goals.map(g=>{
-        const done = (g.checklist||[]).filter(c=>c.done).length;
-        const tot = (g.checklist||[]).length;
-        const pct = tot? Math.round(done/tot*100) : (g.progress||0);
-        const days = g.deadline ? daysBetween(g.deadline,todayISO()) : null;
-        return `
-        <div class="card" style="cursor:pointer;" onclick="openGoalModal('${g.id}')">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-            <div style="font-weight:600;font-size:14.5px;">🎯 ${esc(g.title)}</div>
-            <span class="pill ${
-              g.status==='concluida'
-                ? 'pill-teal'
-                : g.status==='pausada'
-                  ? 'pill-paused'
-                  : 'pill-amber'
-            }">
-              ${
-                g.status==='concluida'
-                  ? 'Concluída'
-                  : g.status==='pausada'
-                    ? 'Pausada'
-                    : 'Em andamento'
-              }
-            </span>
-          </div>
-          ${g.description?`<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:10px;">${esc(g.description)}</div>`:''}
-          <div class="progress-bar" style="margin-bottom:6px;"><div style="width:${pct}%"></div></div>
-          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-faint);">
-            <span>${pct}% concluído</span>
-            ${days!==null? `<span>${days>=0?'faltam '+days+'d':'atrasada'}</span>` : ''}
-          </div>
-        </div>`;
-      }).join('')}
-    </div>`}
-  `;
+  const groups=new Map();STATE.goals.forEach(g=>{const key=g.topicId||'none';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(g);});
+  const priorityGroups=[['alta','🔴 Alta prioridade'],['normal','🟡 Média prioridade'],['baixa','🟢 Baixa prioridade']];
+  return `<div class="goals-head"><div><h2>Prioridades por área</h2><p>Organize o que é mais importante dentro de cada matéria e ajuste a ordem com as setas.</p></div><button class="btn btn-primary" onclick="openGoalModal()">+ Nova meta</button></div>
+  ${!STATE.goals.length?'<div class="card empty-state">Nenhuma meta cadastrada. Crie sua primeira meta para começar.</div>':''}
+  ${[...groups].map(([key,items])=>{
+    const area=key==='none'?'Sem área definida':topicPath(key)||'Área removida';
+    return `<section class="card goal-area"><div class="goal-area-head"><h3>📚 ${esc(area)}</h3><span>${items.filter(g=>g.status==='concluida').length}/${items.length} concluídas</span></div>
+    ${priorityGroups.map(([priority,label])=>{const peers=items.filter(g=>g.priority===priority).sort((a,b)=>(a.rank||0)-(b.rank||0)||(a.createdAt||'').localeCompare(b.createdAt||''));
+      return !peers.length?'':`<div class="goal-priority-group priority-${priority}"><h4>${label} <small>${peers.length}</small></h4>${peers.map((g,i)=>{const done=g.checklist.filter(c=>c.done).length,pct=g.checklist.length?Math.round(done/g.checklist.length*100):g.progress||0;return `<div class="goal-priority-item"><span class="goal-order">${i+1}</span><div class="goal-item-main" role="button" tabindex="0" onclick="openGoalModal('${g.id}')" onkeydown="if(event.key==='Enter')openGoalModal('${g.id}')"><strong>${esc(g.title)}</strong><small>${g.status==='concluida'?'✓ Concluída':g.status==='pausada'?'Pausada':'Em andamento'} · ${pct}%${g.deadline?' · '+fmtDateShort(g.deadline):''}</small></div><div class="goal-reorder"><button class="icon-btn" aria-label="Subir prioridade" title="Subir" onclick="moveGoalRank('${g.id}',-1)" ${i===0?'disabled':''}>↑</button><button class="icon-btn" aria-label="Descer prioridade" title="Descer" onclick="moveGoalRank('${g.id}',1)" ${i===peers.length-1?'disabled':''}>↓</button></div></div>`}).join('')}</div>`}).join('')}</section>`}).join('')}`;
 }
 function openGoalModal(id=null){
   const editing = id? STATE.goals.find(g=>g.id===id): null;
@@ -1248,9 +1222,9 @@ function saveGoal(id){
     const g = STATE.goals.find(x=>x.id===id);
     Object.assign(g,{title,description,deadline,priority,topicId,status,checklist,updatedAt:now});
   } else {
-    STATE.goals.push({id:uid(),title,description,deadline,priority,topicId,status,checklist,createdAt:now,updatedAt:now});
+    STATE.goals.push({id:uid(),title,description,deadline,priority,rank:Date.now(),topicId,status,checklist,createdAt:now,updatedAt:now});
   }
-  saveState(); closeModal(); render(); toast('Meta salva');
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Meta salva');
 }
 function deleteGoal(id){
   const goal = STATE.goals.find(x=>x.id===id);
@@ -1797,7 +1771,7 @@ function saveFlashcard(id){
   } else {
     STATE.flashcards.push({id:uid(),front,back,topicId,difficulty,nextReview:todayISO(),repetitions:0,totalReviews:0,reviewIntervalDays:0,easeFactor:2.5,reviewHistory:[],createdAt:new Date().toISOString()});
   }
-  saveState(); closeModal(); render(); toast('Flashcard salvo');
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Flashcard salvo');
 }
 function deleteFlashcard(id){
   const flash = STATE.flashcards.find(x=>x.id===id);
@@ -2629,7 +2603,7 @@ function saveQuestion(id){
   } else {
     STATE.questions.push({id:uid(),question,answer,questionHtml,answerHtml,topicId,difficulty,tags,status:'ativa',createdAt:new Date().toISOString()});
   }
-  saveState();closeModal();render();toast('Questão salva');
+  saveState();clearActiveDraft(); closeModal();render();toast('Questão salva');
 }
 function deleteQuestion(id){
   const question = STATE.questions.find(x=>x.id===id);
@@ -3097,6 +3071,22 @@ function runSearch(q){
 /* =====================================================================
    MODAL SYSTEM
 ===================================================================== */
+const EDITOR_THEME_KEY='central-estudos-editor-theme-v2';
+let EDITOR_THEME=localStorage.getItem(EDITOR_THEME_KEY)==='light'?'light':'dark';
+let DRAFT_TIMEOUT=null, ACTIVE_DRAFT_KEY=null;
+function editorThemeControl(){return `<button type="button" class="btn btn-sm editor-theme-button" onclick="toggleEditorTheme()" title="Alternar apenas os campos de edição">${EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro'}</button>`;}
+function applyEditorTheme(){document.querySelectorAll('.modal-overlay .editor-body,.modal-overlay .question-editor-body,.modal-overlay textarea,.modal-overlay input[type=text],.modal-overlay input:not([type]),.modal-overlay [contenteditable=true]').forEach(el=>el.classList.toggle('editor-light',EDITOR_THEME==='light'));}
+function toggleEditorTheme(){EDITOR_THEME=EDITOR_THEME==='light'?'dark':'light';localStorage.setItem(EDITOR_THEME_KEY,EDITOR_THEME);applyEditorTheme();document.querySelectorAll('.editor-theme-button').forEach(el=>el.textContent=EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro');}
+function draftKeyForModal(){const m=document.getElementById('activeModalOverlay');if(!m)return null;const fields=['mNoteBody','mFlashFront','mQuestionBody','mGoalTitle','mDoubtQ','mSessObs'];const match=fields.find(id=>m.querySelector('#'+id));return match?'ce-draft-'+(CURRENT_USER?.id||'anon')+'-'+match+'-'+(m.querySelector('[data-draft-id]')?.dataset.draftId||'new'):null;}
+function draftSnapshot(m){const out={};m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{if(el.type==='file'||el.type==='password'||el.type==='hidden'||el.type==='checkbox'||el.type==='radio')return;const key=el.id||'field-'+i;out[key]=el.isContentEditable?el.innerHTML:el.value;});return out;}
+function attachDraftAutosave(){const m=document.getElementById('activeModalOverlay');if(!m)return;ACTIVE_DRAFT_KEY=draftKeyForModal();if(!ACTIVE_DRAFT_KEY)return;
+ const key=ACTIVE_DRAFT_KEY;let saved=null;try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch{}
+ if(saved&&saved.values&&confirm('Existe um rascunho de edição neste navegador. Deseja recuperá-lo?')){m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{const k=el.id||'field-'+i;if(saved.values[k]!==undefined){if(el.isContentEditable)el.innerHTML=sanitizeNoteHtml(saved.values[k]);else if(el.type!=='password'&&el.type!=='file')el.value=saved.values[k];}});}
+ const handler=()=>{clearTimeout(DRAFT_TIMEOUT);DRAFT_TIMEOUT=setTimeout(()=>{try{localStorage.setItem(key,JSON.stringify({savedAt:Date.now(),values:draftSnapshot(m)}));const el=m.querySelector('.draft-status');if(el)el.textContent='Rascunho salvo neste dispositivo';}catch(e){console.warn('Rascunho indisponível',e);}},650);};
+ m.addEventListener('input',handler);m.addEventListener('change',handler);
+ const footer=document.createElement('div');footer.className='draft-toolbar';footer.innerHTML=editorThemeControl()+'<span class="draft-status">Rascunho local automático · não sincronizado com a nuvem</span>';m.querySelector('.modal')?.prepend(footer);applyEditorTheme();
+}
+function clearActiveDraft(){clearTimeout(DRAFT_TIMEOUT);if(ACTIVE_DRAFT_KEY)localStorage.removeItem(ACTIVE_DRAFT_KEY);ACTIVE_DRAFT_KEY=null;}
 function showModal(innerHtml, wide, extraClass){
   const overlay = document.createElement('div');
   overlay.className='modal-overlay';
@@ -3105,6 +3095,7 @@ function showModal(innerHtml, wide, extraClass){
   overlay.innerHTML = `<div class="modal ${wide?'wide':''} ${extraClass||''}">${innerHtml}</div>`;
   document.body.appendChild(overlay);
   document.addEventListener('keydown', escCloseHandler);
+  attachDraftAutosave();
 }
 function escCloseHandler(e){ if(e.key==='Escape') closeModal(); }
 function closeModal(){
@@ -3192,7 +3183,7 @@ let AUTH_MODE = 'login'; // 'login' | 'signup'
 let AUTH_MSG = null; // {type:'error'|'success', text}
 let AUTH_VIEW = 'landing'; // landing | auth
 let PASSWORD_RECOVERY_MODE = false;
-const APP_REDIRECT_URL=()=>window.location.origin+window.location.pathname;
+const APP_REDIRECT_URL=()=>new URL('auth-callback.html',window.location.href).href;
 
 function renderPublicLanding(){
   document.body.classList.add('public-landing-body');
@@ -3356,7 +3347,7 @@ async function bootAuthenticated(user){
   try{
     const {data:{session},error}=await sb.auth.getSession();
     if(error)throw error;
-    if(session?.user)await bootAuthenticated(session.user);
+    if(PASSWORD_RECOVERY_MODE)renderPasswordRecovery();else if(session?.user)await bootAuthenticated(session.user);
     else renderPublicLanding();
   }catch(e){
     console.error('Falha ao iniciar autenticação',e);
@@ -3370,7 +3361,7 @@ async function bootAuthenticated(user){
       renderPasswordRecovery();
       return;
     }
-    if(event==='SIGNED_IN'&&session?.user&&(!CURRENT_USER||CURRENT_USER.id!==session.user.id)){
+    if(event==='SIGNED_IN'&&!PASSWORD_RECOVERY_MODE&&session?.user&&(!CURRENT_USER||CURRENT_USER.id!==session.user.id)){
       queueMicrotask(()=>bootAuthenticated(session.user));
     }
     if(event==='SIGNED_OUT'){

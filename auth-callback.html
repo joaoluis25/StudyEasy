@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Verificação de e-mail · Central de Estudos</title>
+        <link rel="stylesheet" href="style.css">
+</head>
+        
+<body style="overflow:auto;min-height:100vh">
+    <main class="auth-wrap">
+        <section class="auth-card" role="status">
+            <div class="auth-brand"><div class="dot"></div>
+            <span>Central de Estudos</span>
+            </div>
+            <h1 id="title" style="font-size:22px;margin-bottom:12px">Verificando seu link...</h1>
+            <p id="message" style="color:var(--text-dim)">Aguarde enquanto confirmamos seu acesso.</p>
+            <a class="btn btn-primary" style="margin-top:20px" href="./index.html">Voltar ao aplicativo</a>
+        </section>
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
+<script>
+const sb=window.supabase.createClient('https://btyxrzknkygylvnrzsuo.supabase.co','eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk');
+(async()=>{const title=document.getElementById('title'),message=document.getElementById('message');
+try{const query=new URLSearchParams(location.search),hash=new URLSearchParams(location.hash.slice(1));const type=query.get('type')||hash.get('type');
+const error=hash.get('error_description')||query.get('error_description');if(error)throw Error('O link expirou ou é inválido. Solicite um novo e-mail.');
+let result;
+if(query.has('token_hash'))result=await sb.auth.verifyOtp({token_hash:query.get('token_hash'),type:type==='recovery'?'recovery':type==='email_change'?'email_change':'signup'});
+else if(query.has('code'))result=await sb.auth.exchangeCodeForSession(query.get('code'));else result=await sb.auth.getSession();
+
+if(result.error)throw result.error;if(type==='recovery'){title.textContent='Redirecionando para alterar a senha';
+
+message.textContent='Seu link foi validado.';
+
+location.replace('./index.html#type=recovery');
+
+return;
+
+}if(!result.data?.session){title.textContent='Verifique sua caixa de entrada';
+
+message.textContent='Não foi possível validar a sessão. Se o link expirou, solicite um novo.';
+
+return;
+
+}title.textContent='E-mail confirmado!';
+message.textContent='Sua conta foi verificada. Você já pode acessar a Central de Estudos.';
+}catch(e){title.textContent='Não foi possível confirmar';
+message.textContent=e.message||'Solicite um novo link.';
+}})();
+</script>
+</body>
+</html>
