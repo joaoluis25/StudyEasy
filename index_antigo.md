@@ -3,8 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Central de Estudos</title>
+<meta name="description" content="Organize seus estudos, planeje suas metas, revise conteúdos e acompanhe sua evolução em um só lugar.">
+<meta name="theme-color" content="#0D1117">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="pt_BR">
+<meta property="og:title" content="Central de Estudos — Organize. Pratique. Evolua.">
+<meta property="og:description" content="Planeje sua rotina, organize conteúdos, pratique a lembrança e acompanhe sua evolução em um só lugar.">
+<title>Central de Estudos — Organize. Pratique. Evolua.</title>
 <link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
@@ -12,8 +21,9 @@
 <body>
 
 <div id="app"></div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 /* =====================================================================
@@ -32,9 +42,15 @@ let CURRENT_USER = null;
 const STORAGE_KEY = 'central-estudos-data-v1';
 let SAVE_TIMER = null;
 let SAVING = false;
+let SAVE_CHAIN = Promise.resolve();
+let SAVE_VERSION = 0;
+let SAVE_STATUS = 'saved'; // pending | saving | saved | error
+let DATA_READY = false;
+let DATA_LOAD_ERROR = null;
 
 function defaultState(){
   return {
+    schemaVersion: 2,
     topics: [], // {id, name, parentId, color, progress}
     notes: [],  // {id,title,html,topicId,tags[],checklist[],priority,favorite,reviewOn,nextReview,interval,createdAt,updatedAt}
     goals: [],
@@ -61,6 +77,14 @@ function defaultState(){
 }
 let STATE = defaultState();
 
+// Ciclos personalizados aceitam foco e pausa de até 180 minutos cada.
+// Mantemos essa regra centralizada para a UI, o salvamento e a leitura dos dados.
+function normalizeCycleMinute(value, fallback, min=0){
+  if(value===null || value===undefined || String(value).trim()==='') return fallback;
+  const n=Number(value);
+  if(!Number.isFinite(n)) return fallback;
+  return Math.round(Math.max(min,Math.min(180,n)));
+}
 function normalizeState(raw){
   const base=defaultState(), data=raw&&typeof raw==='object'?raw:{};
   const arr=k=>Array.isArray(data[k])?data[k]:[];
@@ -70,12 +94,39 @@ function normalizeState(raw){
   const checklist=v=>Array.isArray(v)?v.slice(0,100).map(c=>({done:!!c?.done,text:String(c?.text||'').slice(0,500)})).filter(c=>c.text.trim()):[];
   const topics=arr('topics').slice(0,1000).map(t=>({id:cleanId(t?.id),name:String(t?.name||'').slice(0,200),parentId:typeof t?.parentId==='string'?t.parentId:null,color:Math.max(1,Math.min(20,Number(t?.color)||1)),progress:Math.max(0,Math.min(100,Number(t?.progress)||0))})).filter(t=>t.name.trim());
   const topicIds=new Set(topics.map(t=>t.id)); topics.forEach(t=>{if(t.parentId===t.id||!topicIds.has(t.parentId))t.parentId=null;});
-  const notes=arr('notes').slice(0,2000).map(n=>({id:cleanId(n?.id),title:String(n?.title||'').slice(0,300),html:sanitizeNoteHtml(String(n?.html||'')),topicId:topicIds.has(n?.topicId)?n.topicId:null,tags:Array.isArray(n?.tags)?n.tags.slice(0,50).map(x=>String(x).slice(0,80)).filter(Boolean):[],checklist:checklist(n?.checklist),priority:['low','normal','high'].includes(n?.priority)?n.priority:'normal',favorite:!!n?.favorite,reviewOn:!!n?.reviewOn,nextReview:cleanDate(n?.nextReview),interval:Math.max(0,Math.min(100,Number(n?.interval)||0)),createdAt:cleanTimestamp(n?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(n?.updatedAt)||cleanTimestamp(n?.createdAt)||new Date().toISOString()}));
-  const goals=arr('goals').slice(0,1000).map(g=>({id:cleanId(g?.id),title:String(g?.title||'').slice(0,300),description:String(g?.description||'').slice(0,2000),deadline:cleanDate(g?.deadline),priority:['low','normal','high'].includes(g?.priority)?g.priority:'normal',topicId:topicIds.has(g?.topicId)?g.topicId:null,status:['aberta','em_andamento','concluida'].includes(g?.status)?g.status:'aberta',checklist:checklist(g?.checklist),progress:Math.max(0,Math.min(100,Number(g?.progress)||0)),createdAt:cleanTimestamp(g?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(g?.updatedAt)||cleanTimestamp(g?.createdAt)||new Date().toISOString()}));
+  const notes=arr('notes').slice(0,2000).map(n=>({id:cleanId(n?.id),title:String(n?.title||'').slice(0,300),html:sanitizeNoteHtml(String(n?.html||'')),topicId:topicIds.has(n?.topicId)?n.topicId:null,tags:Array.isArray(n?.tags)?n.tags.slice(0,50).map(x=>String(x).slice(0,80)).filter(Boolean):[],checklist:checklist(n?.checklist),priority:['low','normal','high'].includes(n?.priority)?n.priority:'normal',favorite:!!n?.favorite,reviewOn:!!n?.reviewOn,nextReview:cleanDate(n?.nextReview),interval:Math.max(0,Math.min(100,Number(n?.interval)||0)),reviewHistory:Array.isArray(n?.reviewHistory)?n.reviewHistory.slice(-500).map(r=>({date:cleanDate(r?.date)||todayISO(),intervalDays:Math.max(1,Math.min(365,Number(r?.intervalDays)||1)),nextReview:cleanDate(r?.nextReview)})):[],createdAt:cleanTimestamp(n?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(n?.updatedAt)||cleanTimestamp(n?.createdAt)||new Date().toISOString()}));
+  const goals=arr('goals').slice(0,1000).map(g=>{
+    const rawStatus=String(g?.status||'andamento').toLowerCase();
+    const status=rawStatus==='concluida'?'concluida':(['pausada','paused'].includes(rawStatus)?'pausada':'andamento');
+    const rawPriority=String(g?.priority||'normal').toLowerCase();
+    const priority=(rawPriority==='alta'||rawPriority==='high')?'alta':((rawPriority==='baixa'||rawPriority==='low')?'baixa':'normal');
+    return {id:cleanId(g?.id),title:String(g?.title||'').slice(0,300),description:String(g?.description||'').slice(0,2000),deadline:cleanDate(g?.deadline),priority,rank:Math.max(0,Math.min(999999,Number(g?.rank)||0)),topicId:topicIds.has(g?.topicId)?g.topicId:null,status,checklist:checklist(g?.checklist),progress:Math.max(0,Math.min(100,Number(g?.progress)||0)),createdAt:cleanTimestamp(g?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(g?.updatedAt)||cleanTimestamp(g?.createdAt)||new Date().toISOString()};
+  });
   const sessions=arr('sessions').slice(0,5000).map(x=>({id:cleanId(x?.id),topicId:topicIds.has(x?.topicId)?x.topicId:null,date:cleanDate(x?.date)||todayISO(),duration:Math.max(0,Math.min(1440,Number(x?.duration)||0)),observation:String(x?.observation||'').slice(0,2000),createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()}));
   const events=arr('events').slice(0,2000).map(x=>({id:cleanId(x?.id),title:String(x?.title||'').slice(0,300),date:cleanDate(x?.date)||todayISO(),type:String(x?.type||'evento').slice(0,80),topicId:topicIds.has(x?.topicId)?x.topicId:null}));
   const doubts=arr('doubts').slice(0,2000).map(x=>({id:cleanId(x?.id),question:String(x?.question||'').slice(0,1000),topicId:topicIds.has(x?.topicId)?x.topicId:null,explanation:String(x?.explanation||'').slice(0,3000),status:x?.status==='resolvida'?'resolvida':'aberta',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.question.trim());
-  const flashcards=arr('flashcards').slice(0,5000).map(x=>({id:cleanId(x?.id),front:String(x?.front||'').slice(0,2000),back:String(x?.back||'').slice(0,5000),topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.front.trim()&&x.back.trim());
+  const flashcards=arr('flashcards').slice(0,5000).map(x=>{
+    const history=Array.isArray(x?.reviewHistory)?x.reviewHistory.slice(-200).map(r=>({
+      date:cleanDate(r?.date)||todayISO(),
+      rating:['again','hard','good','easy'].includes(r?.rating)?r.rating:'good',
+      intervalDays:Math.max(1,Math.min(3650,Math.floor(Number(r?.intervalDays)||1))),
+      nextReview:cleanDate(r?.nextReview)
+    })):[];
+    const interval=Number(x?.reviewIntervalDays);
+    const ease=Number(x?.easeFactor);
+    return {
+      id:cleanId(x?.id),front:String(x?.front||'').slice(0,2000),back:String(x?.back||'').slice(0,5000),
+      topicId:topicIds.has(x?.topicId)?x.topicId:null,
+      difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',
+      nextReview:cleanDate(x?.nextReview)||todayISO(),
+      repetitions:Math.max(0,Math.min(10000,Math.floor(Number(x?.repetitions)||0))),
+      totalReviews:Math.max(0,Math.min(1000000,Math.floor(Number(x?.totalReviews)||0))),
+      reviewIntervalDays:Number.isFinite(interval)?Math.max(0,Math.min(3650,Math.floor(interval))):0,
+      easeFactor:Number.isFinite(ease)?Math.max(1.3,Math.min(3.0,ease)):2.5,
+      reviewHistory:history,
+      createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()
+    };
+  }).filter(x=>x.front.trim()&&x.back.trim());
   const questions=arr('questions').slice(0,5000).map(x=>{
     const legacyQuestion=String(x?.question||'').slice(0,3000);
     const legacyAnswer=String(x?.answer||'').slice(0,8000);
@@ -90,55 +141,200 @@ function normalizeState(raw){
     id:typeof p?.id==='string'&&p.id?p.id:uid(),
     name:String(p?.name||`Timer ${i+1}`).slice(0,50),
     work:Math.max(1,Math.min(180,Number(p?.work)||25)),
-    brk:Math.max(0,Math.min(60,Number(p?.brk)||5))
+    brk:Math.max(0,Math.min(180,p?.brk===0?0:(Number.isFinite(Number(p?.brk))?Number(p.brk):5)))
   })).filter(p=>p.name.trim()):fallbackPresets;
-  const cycles=Array.isArray(pom.cycles)?pom.cycles.slice(0,20).map((c,i)=>({
-    id:typeof c?.id==='string'&&c.id?c.id:uid(),
-    name:String(c?.name||`Ciclo ${i+1}`).slice(0,60),
-    repeats:Math.max(1,Math.min(20,Number(c?.repeats)||1)),
-    steps:Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:Math.max(1,Math.min(180,Number(st?.work)||25)),brk:Math.max(0,Math.min(60,Number(st?.brk)||5))})).filter(st=>st.work>0):[]
-  })).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
+  const cycles=Array.isArray(pom.cycles)?pom.cycles.slice(0,20).map((c,i)=>{
+    const name=String(c?.name||`Ciclo ${i+1}`).slice(0,60);
+    const repeats=Math.max(1,Math.min(20,Number(c?.repeats)||1));
+    const steps=Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:normalizeCycleMinute(st?.work,25,1),brk:normalizeCycleMinute(st?.brk,5,0)})).filter(st=>st.work>0):[];
+
+    // Migra ciclos antigos cujo foco/pausa foi truncado em 60 min antes da correção.
+    // Só aplica quando o próprio nome descreve precisamente repetições e tempos (ex.: "5×70/30"),
+    // há uma única etapa, o número de repetições confere e os valores salvos coincidem com os
+    // valores do nome, exceto pelos campos que ficaram presos em 60.
+    const declared=name.match(/^\s*(\d+)\s*[x×]\s*(\d+)\s*\/\s*(\d+)\s*$/i);
+    if(declared && steps.length===1){
+      const [,repText,workText,breakText]=declared;
+      const declaredRepeats=Number(repText), declaredWork=Number(workText), declaredBreak=Number(breakText);
+      const step=steps[0];
+      const workMatches=step.work===declaredWork || (step.work===60 && declaredWork>60 && declaredWork<=180);
+      const breakMatches=step.brk===declaredBreak || (step.brk===60 && declaredBreak>60 && declaredBreak<=180);
+      const hasLegacyCap=(step.work===60 && declaredWork>60 && declaredWork<=180) || (step.brk===60 && declaredBreak>60 && declaredBreak<=180);
+      if(declaredRepeats===repeats && workMatches && breakMatches && hasLegacyCap){
+        step.work=declaredWork;
+        step.brk=declaredBreak;
+      }
+    }
+    return {id:typeof c?.id==='string'&&c.id?c.id:uid(),name,repeats,steps};
+  }).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
   const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
-  const legacyBrk=Math.max(0,Math.min(60,Number(pom.brk)||5));
-  return {...base,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
+  const legacyBrk=Math.max(0,Math.min(180,pom.brk===0?0:(Number.isFinite(Number(pom.brk))?Number(pom.brk):5)));
+  return {...base,schemaVersion:2,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
 }
 async function loadState(){
-  if(!CURRENT_USER)return;
-  try{const {data,error}=await sb.from('study_data').select('data').eq('user_id',CURRENT_USER.id).maybeSingle();if(error)throw error;STATE=normalizeState(data?.data);}
-  catch(e){console.error('Erro ao carregar dados do Supabase',e);STATE=defaultState();toast('Não foi possível carregar seus dados. Verifique sua conexão.');}
+  if(!CURRENT_USER)return false;
+  DATA_READY=false;
+  DATA_LOAD_ERROR=null;
+  updateSaveStatusUI();
+  try{
+    const {data:row,error}=await sb.from('study_data').select('data').eq('user_id',CURRENT_USER.id).maybeSingle();
+    if(error)throw error;
+    let raw={};
+    if(row){
+      raw=row.data;
+      if(!raw || typeof raw!=='object' || Array.isArray(raw)){
+        throw new Error('O registro de dados possui formato inválido. Os dados não foram alterados.');
+      }
+      const knownCollections=['topics','notes','goals','sessions','events','doubts','questions','flashcards'];
+      const hasKnownData=knownCollections.some(key=>Array.isArray(raw[key]));
+      if(!hasKnownData){
+        throw new Error('Não foi possível reconhecer o formato dos dados salvos. Nenhum dado foi sobrescrito.');
+      }
+    }
+    const normalized=normalizeState(raw);
+    const rawCycles=raw?.settings?.pomodoro?.cycles;
+    const repairedLegacyCycle=Array.isArray(rawCycles)&&normalized.settings.pomodoro.cycles.some(cycle=>{
+      const previous=rawCycles.find(item=>item&&item.id===cycle.id);
+      return !!previous&&Array.isArray(previous.steps)&&cycle.steps.some((step,index)=>
+        Number(previous.steps[index]?.work)!==step.work || Number(previous.steps[index]?.brk)!==step.brk
+      );
+    });
+    STATE=normalized;
+    DATA_READY=true;
+    DATA_LOAD_ERROR=null;
+    updateSaveStatusUI();
+    // Persiste apenas migrações determinísticas reconhecidas no estado salvo.
+    if(repairedLegacyCycle)saveState();
+    return true;
+  }catch(e){
+    console.error('Erro ao carregar dados do Supabase',e);
+    DATA_READY=false;
+    DATA_LOAD_ERROR=e;
+    SAVE_STATUS='error';
+    updateSaveStatusUI();
+    return false;
+  }
+}
+async function persistStateSnapshot(version){
+  const userId=CURRENT_USER?.id;
+  if(!userId||!DATA_READY||version!==SAVE_VERSION)return false;
+  const snapshot=JSON.parse(JSON.stringify(STATE));
+  const task=async()=>{
+    if(!CURRENT_USER||CURRENT_USER.id!==userId||!DATA_READY||version!==SAVE_VERSION)return false;
+    SAVING=true;
+    SAVE_STATUS='saving';
+    updateSaveStatusUI();
+    try{
+      const {error}=await sb.from('study_data').upsert({
+        user_id:userId,
+        data:snapshot,
+        updated_at:new Date().toISOString()
+      },{onConflict:'user_id'});
+      if(error)throw error;
+      if(version===SAVE_VERSION)SAVE_STATUS='saved';
+      return true;
+    }catch(e){
+      console.error('Erro ao salvar no Supabase',e);
+      if(version===SAVE_VERSION){
+        SAVE_STATUS='error';
+        toast('Não foi possível sincronizar. Seus dados continuam nesta tela; tente salvar novamente.');
+      }
+      return false;
+    }finally{
+      SAVING=false;
+      updateSaveStatusUI();
+    }
+  };
+  const queued=SAVE_CHAIN.catch(()=>false).then(task);
+  SAVE_CHAIN=queued.catch(()=>false);
+  return queued;
 }
 function saveState(){
+  if(!CURRENT_USER||!DATA_READY){
+    if(CURRENT_USER&&!DATA_READY)console.warn('Salvamento bloqueado: os dados da conta ainda não foram carregados.');
+    return;
+  }
+  const version=++SAVE_VERSION;
+  SAVE_STATUS='pending';
   clearTimeout(SAVE_TIMER);
-  SAVE_TIMER = setTimeout(async ()=>{
-    if(!CURRENT_USER) return;
-    try{
-      SAVING = true;
-      const { error } = await sb.from('study_data').upsert({
-        user_id: CURRENT_USER.id,
-        data: STATE,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'user_id' });
-      if(error) throw error;
-    }catch(e){
-      console.error('Erro ao salvar no Supabase', e);
-      toast('Erro ao salvar — verifique sua conexão.');
-    }
-    SAVING = false;
-  }, 500);
+  SAVE_TIMER=setTimeout(()=>persistStateSnapshot(version),500);
+  updateSaveStatusUI();
+}
+async function saveStateNow(){
+  if(!CURRENT_USER||!DATA_READY)return false;
+  clearTimeout(SAVE_TIMER);
+  const version=++SAVE_VERSION;
+  SAVE_STATUS='pending';
+  updateSaveStatusUI();
+  return persistStateSnapshot(version);
+}
+async function retrySaveState(){
+  if(SAVE_STATUS!=='error')return;
+  const ok=await saveStateNow();
+  if(ok)toast('Dados sincronizados com sucesso.');
+}
+function saveStatusMarkup(){
+  const labels={pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
+  const icons={pending:'●',saving:'↻',saved:'✓',error:'!'};
+  return `<button type="button" id="saveStatusIndicator" class="sync-status is-${SAVE_STATUS}" onclick="retrySaveState()" ${SAVE_STATUS==='error'?'':'disabled'} aria-live="polite" title="${SAVE_STATUS==='error'?'Clique para tentar salvar novamente':'Status da sincronização'}"><span class="sync-status-icon" aria-hidden="true">${icons[SAVE_STATUS]||'✓'}</span><span>${labels[SAVE_STATUS]||labels.saved}</span></button>`;
+}
+function updateSaveStatusUI(){
+  const el=document.getElementById('saveStatusIndicator');
+  if(!el)return;
+  const labels={pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
+  const icons={pending:'●',saving:'↻',saved:'✓',error:'!'};
+  el.className=`sync-status is-${SAVE_STATUS}`;
+  el.innerHTML=`<span class="sync-status-icon" aria-hidden="true">${icons[SAVE_STATUS]||'✓'}</span><span>${labels[SAVE_STATUS]||labels.saved}</span>`;
+  el.title=SAVE_STATUS==='error'?'Clique para tentar salvar novamente':'Status da sincronização';
+  el.disabled=SAVE_STATUS!=='error';
+}
+function renderDataLoading(){
+  document.body.classList.remove('public-landing-body');
+  const app=document.getElementById('app');
+  app.innerHTML=`<main class="data-state-wrap"><section class="data-state-card"><div class="data-state-icon">☁</div><p class="data-state-eyebrow">CENTRAL DE ESTUDOS</p><h1>Carregando seus dados</h1><p>Estamos preparando seu espaço de estudos com segurança.</p><div class="data-state-spinner" aria-hidden="true"></div></section></main>`;
+}
+function renderDataLoadError(){
+  document.body.classList.remove('public-landing-body');
+  const app=document.getElementById('app');
+  const detail=DATA_LOAD_ERROR?.message||'Não foi possível acessar seus dados no momento.';
+  app.innerHTML=`<main class="data-state-wrap"><section class="data-state-card" role="alert"><div class="data-state-icon error">!</div><p class="data-state-eyebrow">SINCRONIZAÇÃO INDISPONÍVEL</p><h1>Seus dados ainda não foram carregados</h1><p>Por segurança, a Central de Estudos bloqueou a edição para evitar sobrescrever informações salvas.</p><p class="data-state-detail">${esc(detail)}</p><button class="btn btn-primary" type="button" onclick="retryLoadState()">Tentar novamente</button><button class="btn btn-ghost" type="button" onclick="logout()">Sair da conta</button></section></main>`;
+}
+async function retryLoadState(){
+  renderDataLoading();
+  const ok=await loadState();
+  if(ok){restoreTimerRuntime();render();} else renderDataLoadError();
 }
 
 /* =====================================================================
    HELPERS
 ===================================================================== */
 const uid=()=>window.crypto?.randomUUID?window.crypto.randomUUID():Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-8);
-const todayISO=()=>new Date().toISOString().slice(0,10);
+function localDateISO(date=new Date()){
+  const y=date.getFullYear(),m=String(date.getMonth()+1).padStart(2,'0'),d=String(date.getDate()).padStart(2,'0');
+  return `${y}-${m}-${d}`;
+}
+const todayISO=()=>localDateISO(new Date());
 function parseDateSafe(value){if(value instanceof Date)return isNaN(value.getTime())?null:value;if(value===null||value===undefined)return null;const text=String(value).trim();if(!text)return null;const d=/^\d{4}-\d{2}-\d{2}$/.test(text)?new Date(text+'T00:00:00'):new Date(text);return isNaN(d.getTime())?null:d;}
 function isValidDateOnly(value){return /^\d{4}-\d{2}-\d{2}$/.test(String(value||''))&&!!parseDateSafe(value);}
-function dateKey(value){const d=parseDateSafe(value);return d?d.toISOString().slice(0,10):null;}
+function dateKey(value){
+  if(typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value))return isValidDateOnly(value)?value:null;
+  const d=parseDateSafe(value);
+  return d?localDateISO(d):null;
+}
 function daysBetween(a,b){const da=parseDateSafe(a),db=parseDateSafe(b);return da&&db?Math.round((da-db)/86400000):null;}
 function fmtDate(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'}):'Data inválida';}
 function fmtDateShort(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Data inválida';}
-function sanitizeNoteHtml(html){const t=document.createElement('template');t.innerHTML=String(html||'');t.content.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link,svg,math,template').forEach(el=>el.remove());const tags=new Set(['B','STRONG','I','EM','U','S','BR','P','DIV','SPAN','UL','OL','LI','BLOCKQUOTE','PRE','CODE','HR','A','IMG','H1','H2','H3','H4','SUB','SUP']);const attrs={A:new Set(['href','target','rel','title']),IMG:new Set(['src','alt','title','width','height'])};const w=document.createTreeWalker(t.content,NodeFilter.SHOW_ELEMENT),nodes=[];while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(el=>{if(!tags.has(el.tagName)){el.replaceWith(...Array.from(el.childNodes));return;}[...el.attributes].forEach(a=>{const n=a.name.toLowerCase();if(n.startsWith('on')||!attrs[el.tagName]?.has(n)){el.removeAttribute(a.name);return;}if(n==='href'||n==='src'){
+function sanitizeNoteHtml(html){
+  const source=String(html||'');
+  if(window.DOMPurify){
+    return window.DOMPurify.sanitize(source,{
+      ALLOWED_TAGS:['b','strong','i','em','u','s','br','p','div','span','ul','ol','li','blockquote','pre','code','hr','a','img','h1','h2','h3','h4','sub','sup'],
+      ALLOWED_ATTR:['href','target','rel','title','src','alt','width','height'],
+      ALLOW_DATA_ATTR:false,
+      FORBID_TAGS:['script','style','iframe','object','embed','form','base','meta','link','svg','math','template']
+    });
+  }
+  const t=document.createElement('template');t.innerHTML=String(html||'');t.content.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link,svg,math,template').forEach(el=>el.remove());const tags=new Set(['B','STRONG','I','EM','U','S','BR','P','DIV','SPAN','UL','OL','LI','BLOCKQUOTE','PRE','CODE','HR','A','IMG','H1','H2','H3','H4','SUB','SUP']);const attrs={A:new Set(['href','target','rel','title']),IMG:new Set(['src','alt','title','width','height'])};const w=document.createTreeWalker(t.content,NodeFilter.SHOW_ELEMENT),nodes=[];while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(el=>{if(!tags.has(el.tagName)){el.replaceWith(...Array.from(el.childNodes));return;}[...el.attributes].forEach(a=>{const n=a.name.toLowerCase();if(n.startsWith('on')||!attrs[el.tagName]?.has(n)){el.removeAttribute(a.name);return;}if(n==='href'||n==='src'){
 const raw=String(a.value||'').trim();
 if(n==='src' && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(raw) && raw.length<=1400000){el.setAttribute(a.name,raw);return;}
 try{const u=new URL(raw,document.baseURI);if(!['http:','https:','mailto:'].includes(u.protocol))el.removeAttribute(a.name);else el.setAttribute(a.name,u.href);}catch{el.removeAttribute(a.name);}
@@ -168,10 +364,11 @@ function allDescendantIds(id){
 function activityByDay(){
   const map = {};
   const bump=(iso,weight)=>{const k=dateKey(iso);if(!k)return;map[k]=(map[k]||0)+weight;};
-  STATE.notes.forEach(n=>{ bump(n.createdAt,2); if(n.updatedAt && n.updatedAt.slice(0,10)!==n.createdAt.slice(0,10)) bump(n.updatedAt,1); });
+  STATE.notes.forEach(n=>{ bump(n.createdAt,2); if(n.updatedAt && dateKey(n.updatedAt)!==dateKey(n.createdAt)) bump(n.updatedAt,1); });
   STATE.sessions.forEach(s=> bump(s.date, 2));
   STATE.doubts.forEach(d=> bump(d.createdAt,1));
-  STATE.flashcards.forEach(f=> bump(f.createdAt,1));
+  STATE.notes.forEach(n=>(n.reviewHistory||[]).forEach(r=>bump(r.date,1)));
+  STATE.flashcards.forEach(f=>{bump(f.createdAt,1);(f.reviewHistory||[]).forEach(r=>bump(r.date,1));});
   return map;
 }
 function computeStreak(){
@@ -214,8 +411,9 @@ let QUESTION_FILTER = {
 let TIMER = {
   running:false, hasStarted:false, mode:'work', remaining:25*60, intervalId:null, topicId:null,
   planType:'preset', presetId:'p25', cycleId:null, cycleSteps:[], cycleRepeats:1,
-  cycleStepIndex:0, cycleRound:1, currentWorkMinutes:25, currentBreakMinutes:5
+  cycleStepIndex:0, cycleRound:1, currentWorkMinutes:25, currentBreakMinutes:5, endAt:null
 };
+let CYCLE_EDITING_ID = null;
 
 const ROUTES = [
   {id:'dashboard', label:'Dashboard', ic:'🏠'},
@@ -243,7 +441,9 @@ function navigate(route){ ROUTE = route; SIDEBAR_OPEN=false; render(); }
    RENDER SHELL
 ===================================================================== */
 function render(){
+  document.body.classList.remove('public-landing-body');
   const app = document.getElementById('app');
+  if(CURRENT_USER&&!DATA_READY){renderDataLoadError();return;}
   const streak = computeStreak();
   app.innerHTML = `
     ${SIDEBAR_OPEN?'<div class="backdrop-close" onclick="SIDEBAR_OPEN=false;render()"></div>':''}
@@ -284,7 +484,10 @@ function render(){
             <div class="sub">${topbarSubtitle()}</div>
           </div>
         </div>
-        <button class="search-btn" onclick="openSearch()">🔍 Buscar em tudo...<kbd>/</kbd></button>
+        <div class="topbar-actions">
+          ${saveStatusMarkup()}
+          <button class="search-btn" onclick="openSearch()" aria-label="Buscar em tudo"><span class="search-btn-icon" aria-hidden="true">🔍</span><span class="search-btn-text">Buscar em tudo...</span><kbd>/</kbd></button>
+        </div>
       </div>
       <div class="content" id="content"></div>
     </div>
@@ -928,7 +1131,7 @@ function saveNote(id, forDate){
       updatedAt: now
     });
   }
-  saveState(); closeModal(); render(); toast('Anotação salva');
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Anotação salva');
 }
 function deleteNote(id){
   const note = STATE.notes.find(x=>x.id===id);
@@ -944,49 +1147,23 @@ function deleteNote(id){
 /* =====================================================================
    METAS
 ===================================================================== */
+function goalPriorityScore(g){return {alta:0,normal:1,baixa:2}[g.priority]??1;}
+function moveGoalRank(id,delta){
+  const goal=STATE.goals.find(g=>g.id===id);if(!goal)return;
+  const peers=STATE.goals.filter(g=>g.topicId===goal.topicId&&g.priority===goal.priority).sort((a,b)=>(a.rank||0)-(b.rank||0)||(a.createdAt||'').localeCompare(b.createdAt||''));
+  const i=peers.findIndex(g=>g.id===id),j=i+delta;if(j<0||j>=peers.length)return;
+  [peers[i],peers[j]]=[peers[j],peers[i]];peers.forEach((g,n)=>g.rank=n+1);saveState();render();
+}
 function viewMetas(){
-  const goals = STATE.goals.slice().sort((a,b)=>(a.deadline||'9999').localeCompare(b.deadline||'9999'));
-  return `
-    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
-      <button class="btn btn-primary" onclick="openGoalModal()">+ Nova meta</button>
-    </div>
-    ${goals.length===0? `<div class="card"><div class="empty-state"><div class="ic">🎯</div><div class="t">Nenhuma meta criada</div><div class="d">Metas ajudam a dar direção aos seus estudos — grandes ou pequenas.</div></div></div>` :
-    `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(350px,1fr));">
-      ${goals.map(g=>{
-        const done = (g.checklist||[]).filter(c=>c.done).length;
-        const tot = (g.checklist||[]).length;
-        const pct = tot? Math.round(done/tot*100) : (g.progress||0);
-        const days = g.deadline ? daysBetween(g.deadline,todayISO()) : null;
-        return `
-        <div class="card" style="cursor:pointer;" onclick="openGoalModal('${g.id}')">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-            <div style="font-weight:600;font-size:14.5px;">🎯 ${esc(g.title)}</div>
-            <span class="pill ${
-              g.status==='concluida'
-                ? 'pill-teal'
-                : g.status==='pausada'
-                  ? 'pill-paused'
-                  : 'pill-amber'
-            }">
-              ${
-                g.status==='concluida'
-                  ? 'Concluída'
-                  : g.status==='pausada'
-                    ? 'Pausada'
-                    : 'Em andamento'
-              }
-            </span>
-          </div>
-          ${g.description?`<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:10px;">${esc(g.description)}</div>`:''}
-          <div class="progress-bar" style="margin-bottom:6px;"><div style="width:${pct}%"></div></div>
-          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-faint);">
-            <span>${pct}% concluído</span>
-            ${days!==null? `<span>${days>=0?'faltam '+days+'d':'atrasada'}</span>` : ''}
-          </div>
-        </div>`;
-      }).join('')}
-    </div>`}
-  `;
+  const groups=new Map();STATE.goals.forEach(g=>{const key=g.topicId||'none';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(g);});
+  const priorityGroups=[['alta','🔴 Alta prioridade'],['normal','🟡 Média prioridade'],['baixa','🟢 Baixa prioridade']];
+  return `<div class="goals-head"><div><h2>Prioridades por área</h2><p>Organize o que é mais importante dentro de cada matéria e ajuste a ordem com as setas.</p></div><button class="btn btn-primary" onclick="openGoalModal()">+ Nova meta</button></div>
+  ${!STATE.goals.length?'<div class="card empty-state">Nenhuma meta cadastrada. Crie sua primeira meta para começar.</div>':''}
+  ${[...groups].map(([key,items])=>{
+    const area=key==='none'?'Sem área definida':topicPath(key)||'Área removida';
+    return `<section class="card goal-area"><div class="goal-area-head"><h3>📚 ${esc(area)}</h3><span>${items.filter(g=>g.status==='concluida').length}/${items.length} concluídas</span></div>
+    ${priorityGroups.map(([priority,label])=>{const peers=items.filter(g=>g.priority===priority).sort((a,b)=>(a.rank||0)-(b.rank||0)||(a.createdAt||'').localeCompare(b.createdAt||''));
+      return !peers.length?'':`<div class="goal-priority-group priority-${priority}"><h4>${label} <small>${peers.length}</small></h4>${peers.map((g,i)=>{const done=g.checklist.filter(c=>c.done).length,pct=g.checklist.length?Math.round(done/g.checklist.length*100):g.progress||0;return `<div class="goal-priority-item"><span class="goal-order">${i+1}</span><div class="goal-item-main" role="button" tabindex="0" onclick="openGoalModal('${g.id}')" onkeydown="if(event.key==='Enter')openGoalModal('${g.id}')"><strong>${esc(g.title)}</strong><small>${g.status==='concluida'?'✓ Concluída':g.status==='pausada'?'Pausada':'Em andamento'} · ${pct}%${g.deadline?' · '+fmtDateShort(g.deadline):''}</small></div><div class="goal-reorder"><button class="icon-btn" aria-label="Subir prioridade" title="Subir" onclick="moveGoalRank('${g.id}',-1)" ${i===0?'disabled':''}>↑</button><button class="icon-btn" aria-label="Descer prioridade" title="Descer" onclick="moveGoalRank('${g.id}',1)" ${i===peers.length-1?'disabled':''}>↓</button></div></div>`}).join('')}</div>`}).join('')}</section>`}).join('')}`;
 }
 function openGoalModal(id=null){
   const editing = id? STATE.goals.find(g=>g.id===id): null;
@@ -1045,9 +1222,9 @@ function saveGoal(id){
     const g = STATE.goals.find(x=>x.id===id);
     Object.assign(g,{title,description,deadline,priority,topicId,status,checklist,updatedAt:now});
   } else {
-    STATE.goals.push({id:uid(),title,description,deadline,priority,topicId,status,checklist,createdAt:now,updatedAt:now});
+    STATE.goals.push({id:uid(),title,description,deadline,priority,rank:Date.now(),topicId,status,checklist,createdAt:now,updatedAt:now});
   }
-  saveState(); closeModal(); render(); toast('Meta salva');
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Meta salva');
 }
 function deleteGoal(id){
   const goal = STATE.goals.find(x=>x.id===id);
@@ -1097,14 +1274,20 @@ function viewRevisoes(){
   `;
 }
 function markReviewed(id){
-  const n = STATE.notes.find(x=>x.id===id);
-  if(!n) return;
-  const intervals = STATE.settings.reviewIntervals;
-  n.interval = Math.min((n.interval||0)+1, intervals.length-1);
-  const days = intervals[n.interval];
-  const next = new Date(); next.setDate(next.getDate()+days);
-  n.nextReview = dateKey(next);
-  saveState(); render(); toast('Revisão registrada · próxima em '+days+' dias');
+  const n=STATE.notes.find(x=>x.id===id);
+  if(!n)return;
+  const intervals=(STATE.settings.reviewIntervals||[1,3,7,16,35]).filter(x=>Number.isFinite(Number(x))&&Number(x)>0);
+  if(!intervals.length){toast('Configure os intervalos de revisão antes de continuar.');return;}
+  const currentIndex=Math.max(0,Math.min(Math.floor(Number(n.interval)||0),intervals.length-1));
+  const days=Math.max(1,Number(intervals[currentIndex])||1);
+  const next=new Date();next.setHours(12,0,0,0);next.setDate(next.getDate()+days);
+  n.nextReview=localDateISO(next);
+  n.interval=Math.min(currentIndex+1,intervals.length-1);
+  n.reviewHistory=Array.isArray(n.reviewHistory)?n.reviewHistory:[];
+  n.reviewHistory.push({date:todayISO(),intervalDays:days,nextReview:n.nextReview});
+  if(n.reviewHistory.length>500)n.reviewHistory=n.reviewHistory.slice(-500);
+  n.updatedAt=new Date().toISOString();
+  saveState();render();toast('Revisão registrada · próxima em '+days+' dias');
 }
 
 /* =====================================================================
@@ -1114,7 +1297,7 @@ function viewSessoes(){
   const sessions = STATE.sessions.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,40);
   const p=STATE.settings.pomodoro;
   const activeLabel=TIMER.planType==='cycle'
-    ? `${TIMER.cycleId?esc((p.cycles.find(c=>c.id===TIMER.cycleId)||{}).name||'Ciclo'): 'Ciclo'} · ${TIMER.cycleRound}/${TIMER.cycleRepeats}`
+    ? `${TIMER.cycleId?esc((p.cycles.find(c=>c.id===TIMER.cycleId)||{}).name||'Ciclo'): 'Ciclo'} · foco ${TIMER.currentWorkMinutes} min / pausa ${TIMER.currentBreakMinutes} min · ${TIMER.cycleRound}/${TIMER.cycleRepeats}`
     : esc((p.presets.find(x=>x.id===TIMER.presetId)||{}).name||'Timer');
   return `
     <div class="grid sessions-page-grid">
@@ -1159,7 +1342,52 @@ function viewSessoes(){
     </div>
   `;
 }
-function fmtTimer(sec){ const m=Math.floor(Math.max(0,sec)/60), s=Math.max(0,sec)%60; return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); }
+function timerStorageKey(){return CURRENT_USER?'central-estudos-timer-v1:'+CURRENT_USER.id:null;}
+function persistTimerRuntime(){
+  const key=timerStorageKey();if(!key)return;
+  try{
+    localStorage.setItem(key,JSON.stringify({
+      planType:TIMER.planType,presetId:TIMER.presetId,cycleId:TIMER.cycleId,mode:TIMER.mode,
+      remaining:TIMER.remaining,endAt:TIMER.endAt,running:TIMER.running,hasStarted:TIMER.hasStarted,
+      topicId:TIMER.topicId,cycleStepIndex:TIMER.cycleStepIndex,cycleRound:TIMER.cycleRound
+    }));
+  }catch(e){console.warn('Não foi possível preservar o estado do timer neste navegador.',e);}
+}
+function restoreTimerRuntime(){
+  const key=timerStorageKey();if(!key)return;
+  try{
+    const raw=localStorage.getItem(key);if(!raw)return;
+    const saved=JSON.parse(raw);
+    if(saved.planType==='cycle'&&getCycleById(saved.cycleId)){
+      const c=getCycleById(saved.cycleId);TIMER.planType='cycle';TIMER.cycleId=c.id;TIMER.cycleSteps=c.steps.map(s=>({...s}));TIMER.cycleRepeats=c.repeats;
+    }else{
+      const p=getPresetById(saved.presetId)||STATE.settings.pomodoro.presets[0];
+      if(!p)return;
+      TIMER.planType='preset';TIMER.presetId=p.id;TIMER.cycleId=null;TIMER.cycleSteps=[];TIMER.cycleRepeats=1;
+    }
+    TIMER.topicId=STATE.topics.some(t=>t.id===saved.topicId)?saved.topicId:null;
+    TIMER.mode=saved.mode==='break'?'break':'work';
+    TIMER.cycleStepIndex=Math.max(0,Math.min(Math.max(0,TIMER.cycleSteps.length-1),Number(saved.cycleStepIndex)||0));
+    TIMER.cycleRound=Math.max(1,Math.min(TIMER.cycleRepeats,Number(saved.cycleRound)||1));
+    const step=TIMER.planType==='cycle'?(TIMER.cycleSteps[TIMER.cycleStepIndex]||TIMER.cycleSteps[0]):getPresetById(TIMER.presetId);
+    if(!step)return;
+    TIMER.currentWorkMinutes=step.work;TIMER.currentBreakMinutes=step.brk;
+    const phaseTotal=(TIMER.mode==='work'?step.work:step.brk)*60;
+    TIMER.remaining=Math.max(0,Math.min(phaseTotal,Number(saved.remaining)||0));
+    const hadRunningDeadline=!!saved.running&&Number.isFinite(Number(saved.endAt));
+    TIMER.running=hadRunningDeadline&&Number(saved.endAt)>Date.now();
+    TIMER.endAt=TIMER.running?Number(saved.endAt):null;
+    if(hadRunningDeadline)TIMER.remaining=Math.max(0,Math.min(phaseTotal,Math.ceil((Number(saved.endAt)-Date.now())/1000)));
+    TIMER.hasStarted=!!saved.hasStarted||TIMER.running;
+    if(TIMER.running){TIMER.intervalId=setInterval(()=>{
+      if(!TIMER.running||!TIMER.endAt)return;
+      TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+      if(TIMER.remaining<=0)handleTimerPhaseEnd();
+      refreshTimerDisplay();
+    },250);}
+  }catch(e){console.warn('Estado anterior do timer ignorado.',e);}
+}
+function fmtTimer(sec){const safe=Math.max(0,Math.floor(Number(sec)||0)),m=Math.floor(safe/60),s=safe%60;return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}
 function refreshTimerDisplay(){
   const value=fmtTimer(TIMER.remaining);
   const el=document.getElementById('pomodoroDisplay'); if(el) el.textContent=value;
@@ -1186,32 +1414,42 @@ function toggleSidebarTimer(event){
 function getPresetById(id){ return STATE.settings.pomodoro.presets.find(x=>x.id===id)||STATE.settings.pomodoro.presets[0]; }
 function getCycleById(id){ return STATE.settings.pomodoro.cycles.find(x=>x.id===id)||STATE.settings.pomodoro.cycles[0]; }
 function selectTimerPreset(id){
-  const p=getPresetById(id); if(!p)return;
-  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.planType='preset'; TIMER.presetId=p.id; TIMER.cycleId=null; TIMER.cycleSteps=[]; TIMER.cycleRepeats=1; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=p.work; TIMER.currentBreakMinutes=p.brk; TIMER.remaining=p.work*60; render();
+  const p=getPresetById(id);if(!p)return;
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.planType='preset';TIMER.presetId=p.id;TIMER.cycleId=null;TIMER.cycleSteps=[];TIMER.cycleRepeats=1;TIMER.cycleStepIndex=0;TIMER.cycleRound=1;TIMER.mode='work';TIMER.currentWorkMinutes=p.work;TIMER.currentBreakMinutes=p.brk;TIMER.remaining=p.work*60;
+  persistTimerRuntime();render();
 }
 function selectTimerCycle(id){
-  const c=getCycleById(id); if(!c)return;
-  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.planType='cycle'; TIMER.cycleId=c.id; TIMER.presetId=null; TIMER.cycleSteps=c.steps.map(x=>({work:x.work,brk:x.brk})); TIMER.cycleRepeats=c.repeats; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; TIMER.mode='work'; TIMER.currentWorkMinutes=TIMER.cycleSteps[0].work; TIMER.currentBreakMinutes=TIMER.cycleSteps[0].brk; TIMER.remaining=TIMER.currentWorkMinutes*60; render();
+  const c=getCycleById(id);if(!c)return;
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.planType='cycle';TIMER.cycleId=c.id;TIMER.presetId=null;TIMER.cycleSteps=c.steps.map(x=>({work:x.work,brk:x.brk}));TIMER.cycleRepeats=c.repeats;TIMER.cycleStepIndex=0;TIMER.cycleRound=1;TIMER.mode='work';TIMER.currentWorkMinutes=TIMER.cycleSteps[0].work;TIMER.currentBreakMinutes=TIMER.cycleSteps[0].brk;TIMER.remaining=TIMER.currentWorkMinutes*60;
+  persistTimerRuntime();render();
 }
 function startTimer(){
   if(TIMER.running)return;
   TIMER.hasStarted=true;
   TIMER.running=true;
+  TIMER.endAt=Date.now()+Math.max(0,TIMER.remaining)*1000;
   clearInterval(TIMER.intervalId);
   TIMER.intervalId=setInterval(()=>{
-    TIMER.remaining--;
-    if(TIMER.remaining<=0) handleTimerPhaseEnd();
+    if(!TIMER.running||!TIMER.endAt)return;
+    TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+    if(TIMER.remaining<=0)handleTimerPhaseEnd();
     refreshTimerDisplay();
-  },1000);
-  if(ROUTE==='sessoes') render(); else refreshTimerDisplay();
+  },250);
+  persistTimerRuntime();
+  if(ROUTE==='sessoes')render();else refreshTimerDisplay();
 }
 function handleTimerPhaseEnd(){
+  // O fim de cada fase é processado uma única vez, mesmo que a aba tenha ficado suspensa.
+  clearInterval(TIMER.intervalId);
   if(TIMER.mode==='work'){
     const minutes=TIMER.currentWorkMinutes;
     logAutoSession(minutes);
-    TIMER.mode='break'; TIMER.currentBreakMinutes=Math.max(0,TIMER.currentBreakMinutes); TIMER.remaining=TIMER.currentBreakMinutes*60;
+    TIMER.mode='break';
+    TIMER.currentBreakMinutes=Math.max(0,TIMER.currentBreakMinutes);
+    TIMER.remaining=TIMER.currentBreakMinutes*60;
+    TIMER.endAt=TIMER.running?Date.now()+TIMER.remaining*1000:null;
     if(TIMER.currentBreakMinutes>0){
-      if(ROUTE==='sessoes') render();
+      if(ROUTE==='sessoes')render();
       showStudyBreakOverlay(minutes);
     }else{
       advanceTimerCycle();
@@ -1219,6 +1457,13 @@ function handleTimerPhaseEnd(){
   }else{
     advanceTimerCycle();
   }
+  if(TIMER.running)TIMER.intervalId=setInterval(()=>{
+    if(!TIMER.running||!TIMER.endAt)return;
+    TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+    if(TIMER.remaining<=0)handleTimerPhaseEnd();
+    refreshTimerDisplay();
+  },250);
+  persistTimerRuntime();
 }
 function advanceTimerCycle(){
   if(TIMER.planType==='cycle'){
@@ -1229,15 +1474,19 @@ function advanceTimerCycle(){
     }
     const step=TIMER.cycleSteps[TIMER.cycleStepIndex]; TIMER.mode='work'; TIMER.currentWorkMinutes=step.work; TIMER.currentBreakMinutes=step.brk; TIMER.remaining=step.work*60;
   }else{
-    TIMER.mode='work'; TIMER.currentWorkMinutes=getPresetById(TIMER.presetId)?.work||STATE.settings.pomodoro.work; TIMER.currentBreakMinutes=getPresetById(TIMER.presetId)?.brk||STATE.settings.pomodoro.brk; TIMER.remaining=TIMER.currentWorkMinutes*60;
+    const preset=getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk};
+    TIMER.mode='work'; TIMER.currentWorkMinutes=preset.work; TIMER.currentBreakMinutes=preset.brk; TIMER.remaining=TIMER.currentWorkMinutes*60;
   }
-  if(ROUTE==='sessoes') render();
+  TIMER.endAt=TIMER.running?Date.now()+TIMER.remaining*1000:null;
+  persistTimerRuntime();
+  if(ROUTE==='sessoes')render();
 }
 function finishTimerCycle(){
-  clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1;
-  const first=TIMER.cycleSteps[0]||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}; TIMER.currentWorkMinutes=first.work; TIMER.currentBreakMinutes=first.brk; TIMER.remaining=first.work*60;
-  showTimerFinishedOverlay();
-  if(ROUTE==='sessoes') render(); else refreshTimerDisplay();
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.mode='work';TIMER.cycleStepIndex=0;TIMER.cycleRound=1;
+  const first=TIMER.cycleSteps[0]||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk};
+  TIMER.currentWorkMinutes=first.work;TIMER.currentBreakMinutes=first.brk;TIMER.remaining=first.work*60;
+  persistTimerRuntime();showTimerFinishedOverlay();
+  if(ROUTE==='sessoes')render();else refreshTimerDisplay();
 }
 function showStudyBreakOverlay(minutes){
   const old=document.getElementById('timerTransitionOverlay'); if(old)old.remove();
@@ -1255,6 +1504,7 @@ function showStudyBreakOverlay(minutes){
   if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=660;g.gain.setValueAtTime(.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.08,ctx.currentTime+.02);g.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.45);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.5);}catch(e){}}
 }
 function showTimerFinishedOverlay(){
+  const old=document.getElementById('timerTransitionOverlay');if(old)old.remove();
   const overlay=document.createElement('div'); overlay.id='timerTransitionOverlay'; overlay.className='timer-transition-overlay';
   overlay.innerHTML=`<div class="timer-transition-card timer-finished-card"><div class="timer-complete-mark">★</div><div class="timer-transition-kicker">CICLO CONCLUÍDO</div><h2>Você terminou o ciclo.</h2><p>Seu plano de estudos foi concluído. Aproveite a sensação de progresso — e descanse antes do próximo bloco.</p><button class="btn btn-primary" onclick="closeTimerOverlay()">Finalizar</button></div>`;
   document.body.appendChild(overlay); setTimeout(()=>overlay.classList.add('show'),20);
@@ -1264,8 +1514,18 @@ function logAutoSession(duration){
   STATE.sessions.push({id:uid(), topicId:TIMER.topicId, date:todayISO(), duration, observation:'Timer automático', createdAt:new Date().toISOString()});
   saveState();
 }
-function pauseTimer(){ TIMER.running=false; clearInterval(TIMER.intervalId); refreshTimerDisplay(); if(ROUTE==='sessoes')render(); }
-function resetTimer(){ clearInterval(TIMER.intervalId); TIMER.running=false; TIMER.hasStarted=false; TIMER.mode='work'; TIMER.cycleStepIndex=0; TIMER.cycleRound=1; if(TIMER.planType==='cycle'){const c=getCycleById(TIMER.cycleId); if(c){TIMER.cycleSteps=c.steps.map(x=>({...x}));TIMER.cycleRepeats=c.repeats;}} const first=TIMER.planType==='cycle'?(TIMER.cycleSteps[0]||{work:25,brk:5}):getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}; TIMER.currentWorkMinutes=first.work; TIMER.currentBreakMinutes=first.brk; TIMER.remaining=first.work*60; if(ROUTE==='sessoes')render(); else refreshTimerDisplay(); }
+function pauseTimer(){
+  if(TIMER.running&&TIMER.endAt)TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+  TIMER.running=false;TIMER.endAt=null;clearInterval(TIMER.intervalId);
+  persistTimerRuntime();refreshTimerDisplay();if(ROUTE==='sessoes')render();
+}
+function resetTimer(){
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.mode='work';TIMER.cycleStepIndex=0;TIMER.cycleRound=1;
+  if(TIMER.planType==='cycle'){const c=getCycleById(TIMER.cycleId);if(c){TIMER.cycleSteps=c.steps.map(x=>({...x}));TIMER.cycleRepeats=c.repeats;}}
+  const first=TIMER.planType==='cycle'?(TIMER.cycleSteps[0]||{work:25,brk:5}):getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk};
+  TIMER.currentWorkMinutes=first.work;TIMER.currentBreakMinutes=first.brk;TIMER.remaining=first.work*60;
+  persistTimerRuntime();if(ROUTE==='sessoes')render();else refreshTimerDisplay();
+}
 function setPreset(work,brk){ addTimerPresetDirect('Timer rápido',work,brk); }
 function customPreset(){ navigate('config'); setTimeout(()=>document.getElementById('timerPresetName')?.focus(),50); }
 
@@ -1381,43 +1641,103 @@ function deleteDoubt(id){
 /* =====================================================================
    FLASHCARDS
 ===================================================================== */
-let FLASH_INDEX = 0, FLASH_FLIPPED=false, FLASH_TOPIC=null;
+let FLASH_INDEX = 0, FLASH_FLIPPED=false, FLASH_TOPIC=null, FLASH_DUE_ONLY=false, FLASH_REVIEWED_SESSION=0;
+function dueFlashcards(list=STATE.flashcards){
+  const today=todayISO();
+  return list.filter(card=>(card.nextReview||today)<=today);
+}
+function currentFlashcardPool(){
+  const base=FLASH_TOPIC?STATE.flashcards.filter(card=>card.topicId===FLASH_TOPIC):STATE.flashcards;
+  return FLASH_DUE_ONLY?dueFlashcards(base):base;
+}
+function flashcardText(text){return esc(String(text||'')).replace(/\r?\n/g,'<br>');}
+function toggleFlashcard(event){
+  if(event&&event.type==='keydown'&&!['Enter',' '].includes(event.key))return;
+  if(event&&event.type==='keydown')event.preventDefault();
+  FLASH_FLIPPED=!FLASH_FLIPPED;
+  render();
+}
 function viewFlashcards(){
-  const pool = FLASH_TOPIC? STATE.flashcards.filter(f=>f.topicId===FLASH_TOPIC) : STATE.flashcards;
-  if(FLASH_INDEX>=pool.length) FLASH_INDEX=0;
-  const current = pool[FLASH_INDEX];
+  const basePool=FLASH_TOPIC?STATE.flashcards.filter(f=>f.topicId===FLASH_TOPIC):STATE.flashcards;
+  const due=dueFlashcards(basePool);
+  const pool=FLASH_DUE_ONLY?due:basePool;
+  if(FLASH_INDEX>=pool.length)FLASH_INDEX=0;
+  const current=pool[FLASH_INDEX];
+  const reviewCount=STATE.flashcards.reduce((sum,card)=>sum+(Number.isFinite(Number(card.totalReviews))?Number(card.totalReviews):(Array.isArray(card.reviewHistory)?card.reviewHistory.length:0)),0);
   return `
-    <div class="filter-bar">
-      <select onchange="FLASH_TOPIC=this.value||null;FLASH_INDEX=0;render()">
+    <div class="flash-study-header">
+      <div><div class="flash-study-eyebrow">APRENDIZAGEM ATIVA</div><h2>Flashcards</h2><p>Recupere o conteúdo da memória e revise no momento certo.</p></div>
+      <button class="btn btn-primary" onclick="openFlashcardModal()">＋ Novo flashcard</button>
+    </div>
+    <div class="flash-study-summary">
+      <div class="flash-summary-stat"><span>Cartões no total</span><strong>${STATE.flashcards.length}</strong></div>
+      <div class="flash-summary-stat due"><span>Para revisar hoje</span><strong>${due.length}</strong></div>
+      <div class="flash-summary-stat"><span>Revisões feitas</span><strong>${reviewCount}</strong></div>
+      <button class="filter-chip ${FLASH_DUE_ONLY?'active':''}" onclick="FLASH_DUE_ONLY=!FLASH_DUE_ONLY;FLASH_INDEX=0;FLASH_FLIPPED=false;render()">${FLASH_DUE_ONLY?'Ver todos os cartões':'▶ Estudar vencidos'} <span>${due.length}</span></button>
+    </div>
+    <div class="filter-bar flash-study-filters">
+      <label class="flash-topic-filter"><span>Área de estudo</span><select onchange="FLASH_TOPIC=this.value||null;FLASH_INDEX=0;FLASH_FLIPPED=false;render()">
         <option value="">Todas as áreas (${STATE.flashcards.length})</option>
-        ${STATE.topics.map(t=>`<option value="${t.id}" ${FLASH_TOPIC===t.id?'selected':''}>${esc(topicPath(t.id))} (${STATE.flashcards.filter(f=>f.topicId===t.id).length})</option>`).join('')}
-      </select>
-      <button class="btn btn-primary" style="margin-left:auto;" onclick="openFlashcardModal()">+ Novo flashcard</button>
+        ${STATE.topics.map(t=>{const count=STATE.flashcards.filter(f=>f.topicId===t.id).length;return `<option value="${t.id}" ${FLASH_TOPIC===t.id?'selected':''}>${esc(topicPath(t.id))} (${count})</option>`;}).join('')}
+      </select></label>
+      <div class="flash-study-filter-note">${FLASH_DUE_ONLY?'Fila de revisão de hoje':'Modo de estudo livre'}</div>
     </div>
-    ${pool.length===0? `<div class="card"><div class="empty-state"><div class="ic">🧠</div><div class="t">Nenhum flashcard ainda</div><div class="d">Crie flashcards para memorizar conceitos rapidamente.</div></div></div>` : `
-    <div style="margin:10px 0 16px;">
-      <div class="flashcard ${FLASH_FLIPPED?'flipped':''}" onclick="FLASH_FLIPPED=!FLASH_FLIPPED; document.querySelector('.flashcard').classList.toggle('flipped')">
-        <div class="flashcard-inner">
-          <div class="flashcard-face front">${esc(current.front)}</div>
-          <div class="flashcard-face back">${esc(current.back)}</div>
-        </div>
-      </div>
-      <div style="text-align:center;color:var(--text-faint);font-size:12px;margin-top:8px;">Clique no cartão para virar</div>
-      <div style="display:flex;justify-content:center;gap:10px;margin-top:16px;align-items:center;">
-        <button class="icon-btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX-1+${pool.length})%${pool.length};render()">‹</button>
-        <span style="font-size:12.5px;color:var(--text-faint);">${FLASH_INDEX+1} / ${pool.length}</span>
-        <button class="icon-btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX+1)%${pool.length};render()">›</button>
-      </div>
-      <div style="display:flex;justify-content:center;gap:8px;margin-top:12px;">
-        <button class="btn btn-sm" onclick="openFlashcardModal('${current.id}')">✎ Editar</button>
-        <button class="btn btn-sm btn-danger delete-action" onclick="deleteFlashcard('${current.id}')"><span class="trash-icon">🗑</span> Excluir</button>
-      </div>
-    </div>
-    <div class="section-title">Todos os cartões</div>
-    <div class="notes-grid">
-      ${pool.map((f,i)=>`<div class="note-card" onclick="FLASH_INDEX=${i};FLASH_FLIPPED=false;render()"><div class="title" style="margin-bottom:6px;">${esc(f.front)}</div><div class="snippet">${esc(f.back)}</div><div class="meta"><span class="pill ${f.difficulty==='dificil'?'pill-red':f.difficulty==='medio'?'pill-amber':'pill-teal'}">${f.difficulty||'fácil'}</span></div></div>`).join('')}
-    </div>`}
+    ${!pool.length?`<div class="card flash-empty-state"><div class="empty-state"><div class="ic">${FLASH_DUE_ONLY?'✨':'🧠'}</div><div class="t">${FLASH_DUE_ONLY?'Você está em dia!':'Nenhum flashcard nesta seleção'}</div><div class="d">${FLASH_DUE_ONLY?'Você concluiu os cartões vencidos desta área. Volte amanhã ou estude livremente.':'Crie cartões para praticar a lembrança ativa e fixar os conceitos importantes.'}</div>${FLASH_DUE_ONLY?'<button class="btn btn-primary" style="margin-top:14px;" onclick="FLASH_DUE_ONLY=false;FLASH_INDEX=0;render()">Ver todos os cartões</button>':''}</div></div>`:`
+      <div class="flashcards-study-layout">
+        <section class="flashcard-study-panel">
+          <div class="flashcard-study-topline"><span class="flash-index-label">CARTÃO ${FLASH_INDEX+1} DE ${pool.length}</span><span class="flash-next-review">${current.nextReview&&current.nextReview>todayISO()?'Próxima revisão: '+fmtDateShort(current.nextReview):'Revisão pendente'}</span></div>
+          <div class="flashcard ${FLASH_FLIPPED?'flipped':''}" role="button" tabindex="0" aria-label="Virar flashcard para ${FLASH_FLIPPED?'ver a pergunta':'revelar a resposta'}" onclick="toggleFlashcard(event)" onkeydown="toggleFlashcard(event)">
+            <div class="flashcard-inner">
+              <div class="flashcard-face front"><span class="flashcard-face-label">PERGUNTA</span><div>${flashcardText(current.front)}</div><span class="flashcard-flip-hint">Clique para revelar a resposta ↗</span></div>
+              <div class="flashcard-face back"><span class="flashcard-face-label">RESPOSTA</span><div>${flashcardText(current.back)}</div><span class="flashcard-flip-hint">Resposta revelada · avalie sua lembrança</span></div>
+            </div>
+          </div>
+          ${FLASH_FLIPPED?`<div class="flashcard-rating-panel"><div class="flashcard-rating-title">Como você lembrou?</div><p>Seu feedback define quando este cartão voltará para revisão.</p><div class="flashcard-rating-actions"><button class="rating-again" onclick="gradeFlashcard('${current.id}','again')"><strong>De novo</strong><span>1 dia</span></button><button class="rating-hard" onclick="gradeFlashcard('${current.id}','hard')"><strong>Difícil</strong><span>Intervalo curto</span></button><button class="rating-good" onclick="gradeFlashcard('${current.id}','good')"><strong>Bom</strong><span>Intervalo normal</span></button><button class="rating-easy" onclick="gradeFlashcard('${current.id}','easy')"><strong>Fácil</strong><span>Intervalo maior</span></button></div></div>`:`<div class="flashcard-reveal-callout"><span>✦</span> Tente responder mentalmente antes de revelar.</div>`}
+          <div class="flashcard-study-controls"><button class="btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX-1+${pool.length})%${pool.length};render()" aria-label="Cartão anterior">← Anterior</button><span>${FLASH_INDEX+1} / ${pool.length}</span><button class="btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX+1)%${pool.length};render()" aria-label="Próximo cartão">Próximo →</button></div>
+          <div class="flashcard-manage-controls"><button class="btn btn-sm" onclick="openFlashcardModal('${current.id}')">✎ Editar cartão</button><button class="btn btn-sm btn-danger delete-action" onclick="deleteFlashcard('${current.id}')"><span class="trash-icon">🗑</span> Excluir</button></div>
+        </section>
+        <aside class="flashcard-study-side"><div class="flash-side-heading"><div><span>SEU BARALHO</span><h3>Cartões desta área</h3></div><span class="flash-side-count">${pool.length}</span></div><div class="flashcard-deck-list">${pool.map((f,i)=>`<button type="button" class="flashcard-deck-item ${i===FLASH_INDEX?'active':''}" onclick="FLASH_INDEX=${i};FLASH_FLIPPED=false;render()"><span class="flash-deck-number">${String(i+1).padStart(2,'0')}</span><span class="flash-deck-text"><strong>${esc(f.front)}</strong><small>${f.nextReview&&f.nextReview<=todayISO()?'Revisão pendente':'Agendado para '+fmtDateShort(f.nextReview)}</small></span><span class="flash-deck-dot ${f.nextReview&&f.nextReview<=todayISO()?'is-due':''}"></span></button>`).join('')}</div></aside>
+      </div>`}
   `;
+}
+function gradeFlashcard(id,rating){
+  const card=STATE.flashcards.find(f=>f.id===id);
+  if(!card||!['again','hard','good','easy'].includes(rating))return;
+  const oldInterval=Math.max(0,Math.floor(Number(card.reviewIntervalDays)||0));
+  let repetitions=Math.max(0,Math.floor(Number(card.repetitions)||0));
+  let ease=Math.max(1.3,Math.min(3,Number(card.easeFactor)||2.5));
+  let interval=1;
+  if(rating==='again'){
+    interval=1;repetitions=0;ease=Math.max(1.3,ease-.2);
+  }else if(rating==='hard'){
+    interval=repetitions===0?1:Math.max(1,Math.round(oldInterval*1.2));
+    repetitions+=1;ease=Math.max(1.3,ease-.15);
+  }else if(rating==='good'){
+    interval=repetitions===0?1:(repetitions===1?3:Math.max(1,Math.round(oldInterval*ease)));
+    repetitions+=1;
+  }else{
+    interval=repetitions===0?3:(repetitions===1?5:Math.max(1,Math.round(oldInterval*ease*1.3)));
+    repetitions+=1;ease=Math.min(3,ease+.15);
+  }
+  interval=Math.max(1,Math.min(3650,interval));
+  const next=new Date();next.setHours(12,0,0,0);next.setDate(next.getDate()+interval);
+  const nextReview=localDateISO(next),today=todayISO();
+  card.repetitions=repetitions;card.reviewIntervalDays=interval;card.easeFactor=Number(ease.toFixed(2));card.nextReview=nextReview;
+  card.reviewHistory=Array.isArray(card.reviewHistory)?card.reviewHistory:[];
+  card.totalReviews=Math.max(0,Math.floor(Number(card.totalReviews)||card.reviewHistory.length))+1;
+  card.reviewHistory.push({date:today,rating,intervalDays:interval,nextReview});
+  if(card.reviewHistory.length>200)card.reviewHistory=card.reviewHistory.slice(-200);
+  const base=FLASH_TOPIC?STATE.flashcards.filter(f=>f.topicId===FLASH_TOPIC):STATE.flashcards;
+  const currentIndex=currentFlashcardPool().findIndex(f=>f.id===id);
+  if(FLASH_DUE_ONLY){
+    const remainingDue=dueFlashcards(base);
+    FLASH_INDEX=Math.min(Math.max(0,currentIndex),Math.max(0,remainingDue.length-1));
+  }else{
+    FLASH_INDEX=base.length?(Math.max(0,base.findIndex(f=>f.id===id))+1)%base.length:0;
+  }
+  FLASH_FLIPPED=false;FLASH_REVIEWED_SESSION+=1;
+  saveState();render();
+  toast(`Revisão registrada · próximo intervalo: ${interval} ${interval===1?'dia':'dias'}`);
 }
 function openFlashcardModal(id=null){
   const editing = id? STATE.flashcards.find(f=>f.id===id): null;
@@ -1449,9 +1769,9 @@ function saveFlashcard(id){
   if(id){
     Object.assign(STATE.flashcards.find(f=>f.id===id), {front,back,topicId,difficulty});
   } else {
-    STATE.flashcards.push({id:uid(),front,back,topicId,difficulty,createdAt:new Date().toISOString()});
+    STATE.flashcards.push({id:uid(),front,back,topicId,difficulty,nextReview:todayISO(),repetitions:0,totalReviews:0,reviewIntervalDays:0,easeFactor:2.5,reviewHistory:[],createdAt:new Date().toISOString()});
   }
-  saveState(); closeModal(); render(); toast('Flashcard salvo');
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Flashcard salvo');
 }
 function deleteFlashcard(id){
   const flash = STATE.flashcards.find(x=>x.id===id);
@@ -2283,7 +2603,7 @@ function saveQuestion(id){
   } else {
     STATE.questions.push({id:uid(),question,answer,questionHtml,answerHtml,topicId,difficulty,tags,status:'ativa',createdAt:new Date().toISOString()});
   }
-  saveState();closeModal();render();toast('Questão salva');
+  saveState();clearActiveDraft(); closeModal();render();toast('Questão salva');
 }
 function deleteQuestion(id){
   const question = STATE.questions.find(x=>x.id===id);
@@ -2392,7 +2712,7 @@ function viewEstatisticas(){
     </div>
     <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
       <div class="stat-card"><div class="num">${STATE.notes.length}</div><div class="lbl">anotações criadas</div></div>
-      <div class="stat-card"><div class="num">${STATE.notes.filter(n=>n.reviewOn).length? STATE.notes.reduce((a,n)=>a+(n.interval>0?1:0),0):0}</div><div class="lbl">revisões realizadas</div></div>
+      <div class="stat-card"><div class="num">${STATE.notes.reduce((total,n)=>total+(Array.isArray(n.reviewHistory)?n.reviewHistory.length:0),0)+STATE.flashcards.reduce((total,f)=>total+(Number.isFinite(Number(f.totalReviews))?Number(f.totalReviews):(Array.isArray(f.reviewHistory)?f.reviewHistory.length:0)),0)}</div><div class="lbl">revisões registradas</div></div>
       <div class="stat-card"><div class="num">${STATE.flashcards.length}</div><div class="lbl">flashcards</div></div>
       <div class="stat-card"><div class="num">${STATE.doubts.filter(d=>d.status==='resolvida').length}/${STATE.doubts.length}</div><div class="lbl">dúvidas resolvidas</div></div>
     </div>
@@ -2479,7 +2799,7 @@ function viewConfig(){
         <div class="field-row">
           <div class="field"><label>Nome do timer</label><input id="timerPresetName" placeholder="Ex: Revisão rápida"></div>
           <div class="field"><label>Foco (min)</label><input type="number" id="timerPresetWork" min="1" max="180" value="25"></div>
-          <div class="field"><label>Pausa (min)</label><input type="number" id="timerPresetBreak" min="0" max="60" value="5"></div>
+          <div class="field"><label>Pausa (min)</label><input type="number" id="timerPresetBreak" min="0" max="180" step="1" value="5"></div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="addTimerPresetFromForm()">+ Adicionar timer</button>
       </div>
@@ -2487,7 +2807,7 @@ function viewConfig(){
 
     <div class="card" style="margin-bottom:16px;max-width:900px;">
       <div class="section-title">Ciclos personalizados <span class="see-all">combine blocos diferentes e repita automaticamente</span></div>
-      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir ciclo" aria-label="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
+      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="editTimerCycle('${c.id}')">✎ Editar</button><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir ciclo" aria-label="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
       <div class="timer-cycle-builder">
         <div class="field-row">
           <div class="field"><label>Nome do ciclo</label><input id="cycleName" value="Ciclo personalizado" maxlength="60"></div>
@@ -2495,9 +2815,9 @@ function viewConfig(){
         </div>
         <div class="cycle-builder-head"><strong>Etapas</strong><button class="btn btn-sm" onclick="addCycleBuilderStep()">+ Adicionar etapa</button></div>
         <div id="cycleBuilderSteps">
-          <div class="cycle-step-row"><span class="cycle-step-number">1</span><input type="number" class="cycle-work" min="1" max="180" value="60" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="60" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>
+          <div class="cycle-step-row"><span class="cycle-step-number">1</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="60" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>
         </div>
-        <button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="saveCycleFromBuilder()">Salvar ciclo</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center;"><button id="cycleSaveBtn" class="btn btn-primary btn-sm" onclick="saveCycleFromBuilder()">Salvar ciclo</button><button id="cycleEditCancelBtn" class="btn btn-sm" style="display:none;" onclick="cancelCycleEdit()">Cancelar edição</button></div>
       </div>
     </div>
 
@@ -2528,11 +2848,22 @@ function viewConfig(){
   `;
 }
 function addTimerPresetDirect(name,work,brk){
-  const p=STATE.settings.pomodoro; p.presets.push({id:uid(),name:String(name||'Novo timer').trim().slice(0,50),work:Math.max(1,Math.min(180,Number(work)||25)),brk:Math.max(0,Math.min(60,Number(brk)||5))}); saveState(); render(); toast('Timer adicionado');
+  const p=STATE.settings.pomodoro;
+  if(p.presets.length>=30){toast('Você atingiu o limite de 30 timers personalizados.');return;}
+  const cleanName=String(name||'').trim().slice(0,50),focus=Number(work),pause=Number(brk);
+  if(!cleanName||!Number.isInteger(focus)||focus<1||focus>180||!Number.isInteger(pause)||pause<0||pause>180){toast('Confira o nome e a duração do timer.');return;}
+  p.presets.push({id:uid(),name:cleanName,work:focus,brk:pause});
+  saveState();render();toast('Timer adicionado');
 }
 function addTimerPresetFromForm(){
-  const name=document.getElementById('timerPresetName').value.trim(); const work=Number(document.getElementById('timerPresetWork').value); const brk=Number(document.getElementById('timerPresetBreak').value);
-  if(!name||!work||work<1){toast('Informe nome e tempo de foco');return;} addTimerPresetDirect(name,work,Number.isFinite(brk)?brk:5);
+  const name=document.getElementById('timerPresetName').value.trim();
+  const workRaw=document.getElementById('timerPresetWork').value.trim();
+  const breakRaw=document.getElementById('timerPresetBreak').value.trim();
+  const work=Number(workRaw),brk=Number(breakRaw);
+  if(!name){toast('Informe o nome do timer.');document.getElementById('timerPresetName').focus();return;}
+  if(!workRaw||!Number.isInteger(work)||work<1||work>180){toast('O foco deve ser um número inteiro entre 1 e 180 minutos.');document.getElementById('timerPresetWork').focus();return;}
+  if(!breakRaw||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos.');document.getElementById('timerPresetBreak').focus();return;}
+  addTimerPresetDirect(name,work,brk);
 }
 function deleteTimerPreset(id){
   const p=STATE.settings.pomodoro;
@@ -2550,15 +2881,69 @@ function deleteTimerPreset(id){
     }
   });
 }
+function editTimerCycle(id){
+  const cycle=STATE.settings.pomodoro.cycles.find(c=>c.id===id);
+  if(!cycle)return;
+  const nameInput=document.getElementById('cycleName');
+  const repeatsInput=document.getElementById('cycleRepeats');
+  const wrap=document.getElementById('cycleBuilderSteps');
+  if(!nameInput||!repeatsInput||!wrap)return;
+  CYCLE_EDITING_ID=id;
+  nameInput.value=cycle.name;
+  repeatsInput.value=cycle.repeats;
+  wrap.innerHTML=cycle.steps.map((step,i)=>`<div class="cycle-step-row"><span class="cycle-step-number">${i+1}</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="${step.work}" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="${step.brk}" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>`).join('');
+  const saveBtn=document.getElementById('cycleSaveBtn');
+  if(saveBtn)saveBtn.textContent='Salvar alterações';
+  const cancelBtn=document.getElementById('cycleEditCancelBtn');
+  if(cancelBtn)cancelBtn.style.display='inline-flex';
+  wrap.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function cancelCycleEdit(){
+  CYCLE_EDITING_ID=null;
+  render();
+  toast('Edição cancelada');
+}
 function addCycleBuilderStep(){
-  const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="60" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
+  const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
 }
 function removeCycleBuilderStep(btn){const wrap=document.getElementById('cycleBuilderSteps');if(!wrap||wrap.children.length<=1){toast('O ciclo precisa ter pelo menos uma etapa');return;}btn.closest('.cycle-step-row').remove();renumberCycleBuilder();}
 function renumberCycleBuilder(){document.querySelectorAll('#cycleBuilderSteps .cycle-step-row').forEach((r,i)=>r.querySelector('.cycle-step-number').textContent=i+1);}
 function saveCycleFromBuilder(){
-  const name=document.getElementById('cycleName').value.trim(); const repeats=Math.max(1,Math.min(20,Number(document.getElementById('cycleRepeats').value)||1));
-  const steps=[...document.querySelectorAll('#cycleBuilderSteps .cycle-step-row')].map(r=>({work:Math.max(1,Math.min(180,Number(r.querySelector('.cycle-work').value)||25)),brk:Math.max(0,Math.min(60,Number(r.querySelector('.cycle-break').value)||0))}));
-  if(!name||!steps.length){toast('Informe o nome e pelo menos uma etapa');return;} STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats,steps});saveState();render();toast('Ciclo salvo com sucesso');
+  const name=document.getElementById('cycleName').value.trim();
+  const repeatsRaw=document.getElementById('cycleRepeats').value.trim();
+  const repeatsNumber=Number(repeatsRaw);
+  if(!name){toast('Informe o nome do ciclo');document.getElementById('cycleName').focus();return;}
+  if(!Number.isInteger(repeatsNumber)||repeatsNumber<1||repeatsNumber>20){toast('As repetições devem ser um número entre 1 e 20');document.getElementById('cycleRepeats').focus();return;}
+  const rows=[...document.querySelectorAll('#cycleBuilderSteps .cycle-step-row')];
+  if(!rows.length){toast('Adicione pelo menos uma etapa ao ciclo');return;}
+  const steps=[];
+  for(const row of rows){
+    const workInput=row.querySelector('.cycle-work');
+    const breakInput=row.querySelector('.cycle-break');
+    const workRaw=workInput.value.trim();
+    const breakRaw=breakInput.value.trim();
+    const work=Number(workRaw);
+    const brk=Number(breakRaw);
+    if(workRaw===''||!Number.isInteger(work)||work<1||work>180){toast('O foco deve ser um número inteiro entre 1 e 180 minutos');workInput.focus();return;}
+    if(breakRaw===''||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos');breakInput.focus();return;}
+    steps.push({work,brk});
+  }
+  if(CYCLE_EDITING_ID){
+    const cycle=STATE.settings.pomodoro.cycles.find(c=>c.id===CYCLE_EDITING_ID);
+    if(!cycle){CYCLE_EDITING_ID=null;toast('Não foi possível localizar o ciclo para atualizar');return;}
+    Object.assign(cycle,{name,repeats:repeatsNumber,steps});
+    // Se o ciclo editado está selecionado, sincroniza imediatamente o cronômetro com os novos valores.
+    if(TIMER.planType==='cycle'&&TIMER.cycleId===cycle.id){
+      clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;
+      TIMER.cycleSteps=steps.map(step=>({...step}));TIMER.cycleRepeats=repeatsNumber;
+      TIMER.cycleStepIndex=0;TIMER.cycleRound=1;TIMER.mode='work';
+      TIMER.currentWorkMinutes=steps[0].work;TIMER.currentBreakMinutes=steps[0].brk;TIMER.remaining=steps[0].work*60;persistTimerRuntime();
+    }
+    CYCLE_EDITING_ID=null;saveState();render();toast('Ciclo atualizado com sucesso');
+  }else{
+    STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats:repeatsNumber,steps});
+    saveState();render();toast('Ciclo salvo com sucesso');
+  }
 }
 function deleteTimerCycle(id){
   const p=STATE.settings.pomodoro;
@@ -2580,40 +2965,75 @@ function saveTerms(){
   saveState(); toast('Terminologia salva');
 }
 function savePomodoro(){
-  STATE.settings.pomodoro.work=Math.max(1,Math.min(180,Number(document.getElementById('cfgWork').value)||25));
-  STATE.settings.pomodoro.brk=Math.max(0,Math.min(60,Number(document.getElementById('cfgBrk').value)||5));
-  if(!STATE.settings.pomodoro.presets.length)STATE.settings.pomodoro.presets=[{id:uid(),name:'Padrão',work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk}];
-  STATE.settings.pomodoro.presets[0].work=STATE.settings.pomodoro.work; STATE.settings.pomodoro.presets[0].brk=STATE.settings.pomodoro.brk;
+  const wRaw=document.getElementById('cfgWork').value.trim(),bRaw=document.getElementById('cfgBrk').value.trim();
+  const work=Number(wRaw),brk=Number(bRaw);
+  if(!wRaw||!Number.isInteger(work)||work<1||work>180){toast('O foco deve ser um número inteiro entre 1 e 180 minutos.');return;}
+  if(!bRaw||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos.');return;}
+  STATE.settings.pomodoro.work=work;STATE.settings.pomodoro.brk=brk;
+  if(!STATE.settings.pomodoro.presets.length)STATE.settings.pomodoro.presets=[{id:uid(),name:'Padrão',work,brk}];
+  STATE.settings.pomodoro.presets[0].work=work;STATE.settings.pomodoro.presets[0].brk=brk;
   if(TIMER.planType==='preset')TIMER.presetId=STATE.settings.pomodoro.presets[0].id;
-  resetTimer(); saveState(); toast('Pomodoro atualizado');
+  resetTimer();saveState();toast('Pomodoro atualizado');
 }
 function saveIntervals(){
-  const arr = document.getElementById('cfgIntervals').value.split(',').map(x=>Number(x.trim())).filter(n=>!isNaN(n)&&n>0);
-  if(arr.length){ STATE.settings.reviewIntervals=arr; saveState(); toast('Intervalos salvos'); }
+  const raw=document.getElementById('cfgIntervals').value.split(',').map(x=>x.trim());
+  if(!raw.length||raw.some(x=>!x||!Number.isInteger(Number(x))||Number(x)<1||Number(x)>365)){
+    toast('Informe intervalos inteiros entre 1 e 365 dias, separados por vírgula.');return;
+  }
+  const arr=[...new Set(raw.map(Number))].sort((a,b)=>a-b).slice(0,20);
+  if(!arr.length){toast('Informe pelo menos um intervalo válido.');return;}
+  STATE.settings.reviewIntervals=arr;
+  STATE.notes.forEach(n=>{if(Number(n.interval)>=arr.length)n.interval=arr.length-1;});
+  saveState();render();toast('Intervalos de revisão salvos');
 }
 function exportJSON(){
-  const blob = new Blob([JSON.stringify(STATE,null,2)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download='backup-estudos-'+todayISO()+'.json'; a.click();
-  URL.revokeObjectURL(url);
+  if(!DATA_READY){toast('Carregue os dados antes de exportar um backup.');return;}
+  const snapshot={...STATE,backupMeta:{app:'Central de Estudos',schemaVersion:2,exportedAt:new Date().toISOString()}};
+  const blob=new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download='backup-central-estudos-'+todayISO()+'.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-function importJSON(file){
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = ()=>{
-    try{
-      const data = JSON.parse(reader.result);
-      if(!confirm('Isso vai substituir todos os dados atuais pelo backup importado. Continuar?')) return;
-      STATE = Object.assign(defaultState(), data);
-      saveState(); render(); toast('Backup importado com sucesso');
-    }catch(e){ toast('Arquivo inválido'); }
-  };
-  reader.readAsText(file);
+async function importJSON(file){
+  if(!file)return;
+  if(!DATA_READY){toast('Carregue os dados da conta antes de importar.');return;}
+  if(file.size>20*1024*1024){toast('O backup ultrapassa o limite de 20 MB.');return;}
+  try{
+    const text=await file.text();
+    const parsed=JSON.parse(text);
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('A estrutura do arquivo não é válida.');
+    const knownCollections=['topics','notes','goals','sessions','events','doubts','questions','flashcards'];
+    const requiredCollections=['topics','notes','goals','sessions'];
+    if(!requiredCollections.every(k=>Array.isArray(parsed[k]))){
+      throw new Error('Backup inválido: faltam coleções essenciais. Exporte um backup pela Central de Estudos.');
+    }
+    if(parsed.schemaVersion!==undefined&&(!Number.isInteger(Number(parsed.schemaVersion))||Number(parsed.schemaVersion)<1||Number(parsed.schemaVersion)>2)){
+      throw new Error('Este backup foi criado por uma versão incompatível da aplicação.');
+    }
+    for(const key of knownCollections){
+      if(parsed[key]!==undefined&&!Array.isArray(parsed[key]))throw new Error(`O campo "${key}" possui formato inválido.`);
+    }
+    if(!confirm('Importar este backup substituirá os dados atuais. Exporte um backup recente antes de continuar. Deseja prosseguir?'))return;
+    const nextState=normalizeState({...parsed,schemaVersion:2});
+    STATE=nextState;
+    render();
+    const saved=await saveStateNow();
+    if(saved){toast('Backup importado e sincronizado com sucesso.');render();}
+    else{toast('Backup carregado nesta sessão, mas a sincronização falhou. Use “Tentar novamente”.');updateSaveStatusUI();}
+  }catch(e){
+    console.error('Falha ao importar backup',e);
+    toast(e instanceof SyntaxError?'Arquivo JSON inválido.':'Backup inválido: '+(e.message||'verifique o arquivo.'));
+  }
 }
-function resetAll(){
-  if(!confirm('Isso vai apagar TODOS os seus dados permanentemente. Tem certeza?')) return;
-  if(!confirm('Última confirmação: apagar tudo mesmo?')) return;
-  STATE = defaultState(); saveState(); render(); toast('Dados apagados');
+async function resetAll(){
+  if(!DATA_READY){toast('Carregue os dados da conta antes de continuar.');return;}
+  if(!confirm('Isso vai apagar TODOS os seus dados permanentemente. Exporte um backup antes de continuar. Tem certeza?'))return;
+  if(!confirm('Última confirmação: apagar todos os dados dessa conta mesmo?'))return;
+  STATE=defaultState();
+  render();
+  const saved=await saveStateNow();
+  if(saved){toast('Dados apagados e alteração sincronizada.');render();}
+  else{toast('A limpeza não foi sincronizada. Tente salvar novamente antes de sair.');}
 }
 
 /* =====================================================================
@@ -2636,8 +3056,9 @@ function runSearch(q){
   STATE.topics.forEach(t=>{ if(t.name.toLowerCase().includes(query)) results.push({ic:'📚',t:t.name,s:'Tópico', action:()=>{closeModal();filterByTopic(t.id);navigate('anotacoes');}}); });
   STATE.goals.forEach(g=>{ if(g.title.toLowerCase().includes(query)) results.push({ic:'🎯',t:g.title,s:'Meta', action:()=>{closeModal();navigate('metas');setTimeout(()=>openGoalModal(g.id),80);}}); });
   STATE.doubts.forEach(d=>{ if(d.question.toLowerCase().includes(query)) results.push({ic:'❓',t:d.question,s:'Dúvida', action:()=>{closeModal();navigate('duvidas');setTimeout(()=>openDoubtModal(d.id),80);}}); });
-  STATE.questions.forEach(qq=>{ if(qq.question.toLowerCase().includes(query)) results.push({ic:'📋',t:qq.question,s:'Questão', action:()=>{closeModal();navigate('questoes');setTimeout(()=>openQuestionModal(qq.id),80);}}); });
+  STATE.questions.forEach(qq=>{ if((qq.question+' '+qq.answer+' '+stripHtml(qq.questionHtml||'')+' '+stripHtml(qq.answerHtml||'')+' '+(qq.tags||[]).join(' ')).toLowerCase().includes(query)) results.push({ic:'📋',t:qq.question||'Questão com imagem',s:'Questão'+(qq.topicId?' · '+topicPath(qq.topicId):''), action:()=>{closeModal();navigate('questoes');setTimeout(()=>openQuestionModal(qq.id),80);}}); });
   STATE.flashcards.forEach(f=>{ if((f.front+' '+f.back).toLowerCase().includes(query)) results.push({ic:'🧠',t:f.front,s:'Flashcard', action:()=>{closeModal();navigate('flashcards');}}); });
+  STATE.events.forEach(ev=>{if((ev.title+' '+ev.type).toLowerCase().includes(query))results.push({ic:'📅',t:ev.title,s:'Prova ou evento · '+fmtDateShort(ev.date),action:()=>{closeModal();navigate('eventos');setTimeout(()=>openEventModal(ev.id),80);}}); });
 
   el.innerHTML = results.length? results.slice(0,30).map((r,i)=>`
     <div class="search-result" onclick="window.__searchActions[${i}]()">
@@ -2650,6 +3071,22 @@ function runSearch(q){
 /* =====================================================================
    MODAL SYSTEM
 ===================================================================== */
+const EDITOR_THEME_KEY='central-estudos-editor-theme-v2';
+let EDITOR_THEME=localStorage.getItem(EDITOR_THEME_KEY)==='light'?'light':'dark';
+let DRAFT_TIMEOUT=null, ACTIVE_DRAFT_KEY=null;
+function editorThemeControl(){return `<button type="button" class="btn btn-sm editor-theme-button" onclick="toggleEditorTheme()" title="Alternar apenas os campos de edição">${EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro'}</button>`;}
+function applyEditorTheme(){document.querySelectorAll('.modal-overlay .editor-body,.modal-overlay .question-editor-body,.modal-overlay textarea,.modal-overlay input[type=text],.modal-overlay input:not([type]),.modal-overlay [contenteditable=true]').forEach(el=>el.classList.toggle('editor-light',EDITOR_THEME==='light'));}
+function toggleEditorTheme(){EDITOR_THEME=EDITOR_THEME==='light'?'dark':'light';localStorage.setItem(EDITOR_THEME_KEY,EDITOR_THEME);applyEditorTheme();document.querySelectorAll('.editor-theme-button').forEach(el=>el.textContent=EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro');}
+function draftKeyForModal(){const m=document.getElementById('activeModalOverlay');if(!m)return null;const fields=['mNoteBody','mFlashFront','mQuestionBody','mGoalTitle','mDoubtQ','mSessObs'];const match=fields.find(id=>m.querySelector('#'+id));return match?'ce-draft-'+(CURRENT_USER?.id||'anon')+'-'+match+'-'+(m.querySelector('[data-draft-id]')?.dataset.draftId||'new'):null;}
+function draftSnapshot(m){const out={};m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{if(el.type==='file'||el.type==='password'||el.type==='hidden'||el.type==='checkbox'||el.type==='radio')return;const key=el.id||'field-'+i;out[key]=el.isContentEditable?el.innerHTML:el.value;});return out;}
+function attachDraftAutosave(){const m=document.getElementById('activeModalOverlay');if(!m)return;ACTIVE_DRAFT_KEY=draftKeyForModal();if(!ACTIVE_DRAFT_KEY)return;
+ const key=ACTIVE_DRAFT_KEY;let saved=null;try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch{}
+ if(saved&&saved.values&&confirm('Existe um rascunho de edição neste navegador. Deseja recuperá-lo?')){m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{const k=el.id||'field-'+i;if(saved.values[k]!==undefined){if(el.isContentEditable)el.innerHTML=sanitizeNoteHtml(saved.values[k]);else if(el.type!=='password'&&el.type!=='file')el.value=saved.values[k];}});}
+ const handler=()=>{clearTimeout(DRAFT_TIMEOUT);DRAFT_TIMEOUT=setTimeout(()=>{try{localStorage.setItem(key,JSON.stringify({savedAt:Date.now(),values:draftSnapshot(m)}));const el=m.querySelector('.draft-status');if(el)el.textContent='Rascunho salvo neste dispositivo';}catch(e){console.warn('Rascunho indisponível',e);}},650);};
+ m.addEventListener('input',handler);m.addEventListener('change',handler);
+ const footer=document.createElement('div');footer.className='draft-toolbar';footer.innerHTML=editorThemeControl()+'<span class="draft-status">Rascunho local automático · não sincronizado com a nuvem</span>';m.querySelector('.modal')?.prepend(footer);applyEditorTheme();
+}
+function clearActiveDraft(){clearTimeout(DRAFT_TIMEOUT);if(ACTIVE_DRAFT_KEY)localStorage.removeItem(ACTIVE_DRAFT_KEY);ACTIVE_DRAFT_KEY=null;}
 function showModal(innerHtml, wide, extraClass){
   const overlay = document.createElement('div');
   overlay.className='modal-overlay';
@@ -2658,6 +3095,7 @@ function showModal(innerHtml, wide, extraClass){
   overlay.innerHTML = `<div class="modal ${wide?'wide':''} ${extraClass||''}">${innerHtml}</div>`;
   document.body.appendChild(overlay);
   document.addEventListener('keydown', escCloseHandler);
+  attachDraftAutosave();
 }
 function escCloseHandler(e){ if(e.key==='Escape') closeModal(); }
 function closeModal(){
@@ -2716,9 +3154,22 @@ function closeDeleteConfirm(){
 /* =====================================================================
    KEYBOARD SHORTCUTS
 ===================================================================== */
-document.addEventListener('keydown', (e)=>{
-  if(e.key==='/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName) && !document.getElementById('activeModalOverlay')){
-    e.preventDefault(); openSearch();
+document.addEventListener('keydown',(e)=>{
+  if(e.key==='/'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)&&!document.getElementById('activeModalOverlay')){
+    e.preventDefault();openSearch();
+  }
+});
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&TIMER.running&&TIMER.endAt){
+    TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+    if(TIMER.remaining<=0)handleTimerPhaseEnd();
+    refreshTimerDisplay();
+  }
+});
+window.addEventListener('beforeunload',(e)=>{
+  if(DATA_READY&&(SAVE_STATUS==='pending'||SAVE_STATUS==='saving'||SAVE_STATUS==='error')){
+    e.preventDefault();
+    e.returnValue='';
   }
 });
 
@@ -2730,12 +3181,40 @@ document.addEventListener('keydown', (e)=>{
 ===================================================================== */
 let AUTH_MODE = 'login'; // 'login' | 'signup'
 let AUTH_MSG = null; // {type:'error'|'success', text}
+let AUTH_VIEW = 'landing'; // landing | auth
+let PASSWORD_RECOVERY_MODE = false;
+const APP_REDIRECT_URL=()=>new URL('auth-callback.html',window.location.href).href;
+
+function renderPublicLanding(){
+  document.body.classList.add('public-landing-body');
+  const app=document.getElementById('app');
+  app.innerHTML=`
+    <div class="public-site">
+      <header class="public-nav">
+        <a class="public-brand" href="#inicio" aria-label="Central de Estudos - início"><span class="public-brand-mark">✦</span><span>Central de Estudos</span></a>
+        <nav class="public-nav-actions" aria-label="Navegação principal"><a href="#recursos">Recursos</a><a href="#como-funciona">Como funciona</a><button class="btn btn-ghost" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button><button class="btn btn-primary" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button></nav>
+      </header>
+      <main>
+        <section class="public-hero" id="inicio">
+          <div class="public-hero-copy"><div class="public-eyebrow"><span></span> SEU ESPAÇO DE APRENDIZAGEM</div><h1>Estude com intenção.<br><em>Evolua com consistência.</em></h1><p>Planeje sua rotina, organize conteúdos, pratique a lembrança e acompanhe sua evolução em um só lugar — com ferramentas feitas para apoiar o seu jeito de estudar.</p><div class="public-hero-actions"><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Começar gratuitamente <span aria-hidden="true">→</span></button><button class="public-secondary-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Já tenho uma conta</button></div><div class="public-hero-note"><span>✓</span> Planejamento · Revisão · Foco · Progresso</div></div>
+          <div class="public-hero-visual" aria-label="Prévia ilustrativa do painel de estudos"><div class="preview-glow"></div><div class="preview-window"><div class="preview-window-top"><span class="preview-logo">✦</span><span>Seu espaço de estudos</span><span class="preview-window-dots">•••</span></div><div class="preview-welcome"><small>PLANO DE HOJE</small><strong>Um passo de cada vez.</strong><span>Organize suas prioridades e comece pelo que importa.</span></div><div class="preview-stats"><div><span>Foco concluído</span><strong>01h 40m</strong><i><b style="width:66%"></b></i></div><div><span>Metas da semana</span><strong>3 de 5</strong><i><b style="width:60%"></b></i></div></div><div class="preview-task-list"><div class="preview-row"><span class="preview-check">✓</span><span><b>Revisar anotações</b><small>Biologia · 25 min</small></span><span class="preview-pill">Concluído</span></div><div class="preview-row"><span class="preview-empty-check"></span><span><b>Praticar flashcards</b><small>Anatomia · 15 min</small></span><span class="preview-row-arrow">↗</span></div><div class="preview-row"><span class="preview-empty-check"></span><span><b>Resolver questões</b><small>Fisiologia · 20 min</small></span><span class="preview-row-arrow">↗</span></div></div><div class="preview-timer"><span>◷ Sessão de foco</span><strong>25:00</strong><span>Seu tempo, seu ritmo.</span></div></div><div class="preview-floating preview-floating-top"><span>✦</span><div><strong>Revisão inteligente</strong><small>Recupere o que aprendeu</small></div></div><div class="preview-floating preview-floating-bottom"><span>↗</span><div><strong>Progresso visível</strong><small>Pequenos avanços contam</small></div></div></div>
+        </section>
+        <section class="public-value-strip"><div><strong>Organize</strong><span>matérias e conteúdos</span></div><div><strong>Pratique</strong><span>questões e flashcards</span></div><div><strong>Concentre-se</strong><span>sessões de foco</span></div><div><strong>Acompanhe</strong><span>seu progresso</span></div></section>
+        <section class="public-section" id="recursos"><div class="public-section-heading"><div class="public-eyebrow">UM SISTEMA, VÁRIAS POSSIBILIDADES</div><h2>Seu estudo não precisa ficar espalhado.</h2><p>Conecte o planejamento à prática: organize o conteúdo, transforme-o em revisão e veja seu esforço ganhar forma.</p></div><div class="public-feature-grid"><article class="public-feature feature-large"><div class="public-feature-icon amber">▦</div><span class="public-feature-kicker">PLANEJAMENTO</span><h3>Clareza para o dia a dia</h3><p>Reúna calendário, metas, eventos e sessões em um fluxo de organização que ajuda a decidir o próximo passo.</p><div class="feature-mini-calendar"><span>SEG</span><span>TER</span><span>QUA</span><span>QUI</span><span>SEX</span><b>✓</b><b>•</b><b>✓</b><b>•</b><b>✓</b></div></article><article class="public-feature"><div class="public-feature-icon teal">▤</div><span class="public-feature-kicker">CONHECIMENTO</span><h3>Anotações com contexto</h3><p>Organize suas ideias por área, use formatação e mantenha conteúdos importantes acessíveis.</p></article><article class="public-feature"><div class="public-feature-icon violet">▣</div><span class="public-feature-kicker">PRÁTICA ATIVA</span><h3>Questões e flashcards</h3><p>Treine a lembrança, registre seus resultados de revisão e volte aos cartões no momento planejado.</p></article><article class="public-feature"><div class="public-feature-icon blue">◷</div><span class="public-feature-kicker">CONCENTRAÇÃO</span><h3>Foco no seu ritmo</h3><p>Use timers, configure pausas e monte ciclos de estudo que acompanhem a sua rotina.</p></article><article class="public-feature feature-wide"><div class="public-feature-icon green">↗</div><div><span class="public-feature-kicker">EVOLUÇÃO</span><h3>Veja o caminho que está construindo</h3><p>Acompanhe suas sessões, metas e atividades para entender melhor sua consistência ao longo do tempo.</p></div><div class="feature-progress-art"><span>Foco semanal</span><strong>+1 sessão de cada vez</strong><i><b style="width:72%"></b></i><small>Pequenos passos, progresso real.</small></div></article></div></section>
+        <section class="public-how" id="como-funciona"><div class="public-section-heading"><div class="public-eyebrow">SIMPLES PARA COMEÇAR</div><h2>Transforme intenção em rotina.</h2><p>Comece com o essencial e ajuste a sua central conforme suas necessidades mudam.</p></div><div class="public-steps"><article><span>01</span><h3>Organize</h3><p>Crie suas áreas, tópicos e objetivos de estudo.</p></article><article><span>02</span><h3>Pratique</h3><p>Registre conteúdos, resolva questões e revise flashcards.</p></article><article><span>03</span><h3>Acompanhe</h3><p>Use sessões e indicadores para refletir sobre o seu progresso.</p></article></div></section>
+        <section class="public-cta-section"><div><span class="public-eyebrow">COMECE COM O PRÓXIMO PASSO</span><h2>Seu próximo avanço começa com uma boa rotina.</h2><p>Crie seu espaço e organize o que você quer aprender.</p></div><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar minha conta <span aria-hidden="true">→</span></button></section>
+      </main>
+      <footer class="public-footer"><a class="public-brand" href="#inicio"><span class="public-brand-mark">✦</span><span>Central de Estudos</span></a><span>Organize. Pratique. Evolua.</span><button type="button" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Acessar minha conta</button></footer>
+    </div>`;
+}
 
 function renderAuth(){
+  document.body.classList.remove('public-landing-body');
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="auth-wrap">
       <div class="auth-card">
+        <button type="button" class="auth-back-link" onclick="AUTH_VIEW='landing';AUTH_MSG=null;renderPublicLanding()">← Voltar à apresentação</button>
         <div class="auth-brand"><div class="dot"></div><span>Central de Estudos</span></div>
         <div class="auth-tabs">
           <button class="auth-tab ${AUTH_MODE==='login'?'active':''}" onclick="AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button>
@@ -2743,22 +3222,54 @@ function renderAuth(){
         </div>
         ${AUTH_MSG? `<div class="auth-msg ${AUTH_MSG.type}">${esc(AUTH_MSG.text)}</div>` : ''}
         <form id="authForm" onsubmit="return handleAuthSubmit(event)">
-          <div class="field"><label>E-mail</label><input type="email" id="authEmail" required placeholder="voce@email.com"></div>
-          <div class="field"><label>Senha</label><input type="password" id="authPassword" required minlength="6" placeholder="mínimo 6 caracteres"></div>
+          <div class="field"><label for="authEmail">E-mail</label><input type="email" id="authEmail" autocomplete="email" required placeholder="voce@email.com"></div>
+          <div class="field"><label for="authPassword">Senha</label><input type="password" id="authPassword" autocomplete="${AUTH_MODE==='login'?'current-password':'new-password'}" required minlength="8" placeholder="mínimo 8 caracteres"></div>
           <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px;" id="authSubmitBtn">${AUTH_MODE==='login'?'Entrar':'Criar conta'}</button>
         </form>
         ${AUTH_MODE==='login'? `<div style="text-align:center;margin-top:12px;"><a class="es_key" onclick="handleForgotPassword()">Esqueci minha senha</a></div>` : ''}
-        <div class="auth-foot">Seus dados ficam privados e isolados — só você tem acesso ao que estuda aqui.</div>
+        <div class="auth-foot">Seu espaço pessoal para organizar matérias, anotações, questões e sessões de estudo.</div>
       </div>
     </div>
   `;
+}
+function renderPasswordRecovery(){
+  document.body.classList.remove('public-landing-body');
+  const app=document.getElementById('app');
+  app.innerHTML=`
+    <div class="auth-wrap"><div class="auth-card">
+      <div class="auth-brand"><div class="dot"></div><span>Central de Estudos</span></div>
+      <div class="auth-recovery-mark">🔐</div>
+      <h1 class="auth-recovery-title">Defina uma nova senha</h1>
+      <p class="auth-recovery-copy">Escolha uma senha segura para voltar ao seu espaço de estudos.</p>
+      ${AUTH_MSG?`<div class="auth-msg ${AUTH_MSG.type}" role="status">${esc(AUTH_MSG.text)}</div>`:''}
+      <form onsubmit="return handleSetNewPassword(event)">
+        <div class="field"><label for="newPassword">Nova senha</label><input id="newPassword" type="password" minlength="8" autocomplete="new-password" required placeholder="Use pelo menos 8 caracteres"></div>
+        <div class="field"><label for="confirmNewPassword">Confirmar senha</label><input id="confirmNewPassword" type="password" minlength="8" autocomplete="new-password" required placeholder="Digite a senha novamente"></div>
+        <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center;">Atualizar senha</button>
+      </form>
+    </div></div>`;
+}
+async function handleSetNewPassword(e){
+  e.preventDefault();
+  const password=document.getElementById('newPassword').value;
+  const confirmPassword=document.getElementById('confirmNewPassword').value;
+  if(password.length<8){AUTH_MSG={type:'error',text:'Use uma senha com pelo menos 8 caracteres.'};renderPasswordRecovery();return false;}
+  if(password!==confirmPassword){AUTH_MSG={type:'error',text:'As senhas não coincidem.'};renderPasswordRecovery();return false;}
+  try{
+    const {data,error}=await sb.auth.updateUser({password});
+    if(error)throw error;
+    PASSWORD_RECOVERY_MODE=false;AUTH_MODE='login';AUTH_MSG={type:'success',text:'Senha atualizada com sucesso.'};
+    if(data?.user){await bootAuthenticated(data.user);}else renderAuth();
+  }catch(err){AUTH_MSG={type:'error',text:translateAuthError(err.message)};renderPasswordRecovery();}
+  return false;
 }
 async function handleAuthSubmit(e){
   e.preventDefault();
   const email = document.getElementById('authEmail').value.trim();
   const password = document.getElementById('authPassword').value;
+  if(AUTH_MODE==='signup'&&password.length<8){AUTH_MSG={type:'error',text:'Use uma senha com pelo menos 8 caracteres.'};renderAuth();return false;}
   const btn = document.getElementById('authSubmitBtn');
-  const APP_URL = 'https://joaoluis25.github.io/StudyEasy/'
+  const APP_URL = APP_REDIRECT_URL();
   btn.disabled = true; btn.textContent = 'Aguarde...';
   AUTH_MSG = null;
   try{
@@ -2788,7 +3299,7 @@ async function handleForgotPassword(){
   const email = document.getElementById('authEmail').value.trim();
   if(!email){ AUTH_MSG={type:'error',text:'Digite seu e-mail no campo acima primeiro.'}; renderAuth(); return; }
   try{
-    const { error } = await sb.auth.resetPasswordForEmail(email);
+    const { error } = await sb.auth.resetPasswordForEmail(email,{redirectTo:APP_REDIRECT_URL()});
     if(error) throw error;
     AUTH_MSG = {type:'success', text:'Enviamos um link de redefinição de senha para o seu e-mail.'};
   }catch(err){
@@ -2800,40 +3311,72 @@ function translateAuthError(msg){
   if(!msg) return 'Ocorreu um erro. Tente novamente.';
   if(msg.includes('Invalid login credentials')) return 'E-mail ou senha incorretos.';
   if(msg.includes('User already registered')) return 'Já existe uma conta com este e-mail — tente entrar.';
-  if(msg.includes('Password should be')) return 'A senha precisa ter pelo menos 6 caracteres.';
-  return msg;
+  if(msg.includes('Password should be')) return 'A senha não atende ao tamanho mínimo exigido.';
+  if(msg.includes('Email not confirmed')) return 'Confirme seu e-mail antes de entrar.';
+  if(msg.toLowerCase().includes('rate limit')) return 'Muitas tentativas em pouco tempo. Aguarde e tente novamente.';
+  if(msg.toLowerCase().includes('network')) return 'Falha de conexão. Verifique a internet e tente novamente.';
+  return 'Não foi possível concluir a operação. Verifique os dados e tente novamente.';
 }
 async function logout(){
-  if(!confirm('Sair da sua conta?')) return;
-  await sb.auth.signOut();
+  if(!confirm('Sair da sua conta?'))return;
+  if(DATA_READY&&(SAVE_STATUS==='pending'||SAVE_STATUS==='saving')){
+    const saved=await saveStateNow();
+    if(!saved&&!confirm('Ainda existem alterações que não foram sincronizadas. Deseja sair mesmo assim?'))return;
+  }else if(SAVE_STATUS==='error'&&!confirm('A última sincronização falhou. Deseja sair mesmo assim?'))return;
+  try{const {error}=await sb.auth.signOut();if(error)throw error;}
+  catch(e){console.error(e);toast('Não foi possível sair agora. Tente novamente.');}
 }
 
 /* =====================================================================
    INIT
 ===================================================================== */
 async function bootAuthenticated(user){
-  CURRENT_USER = user;
-  await loadState();
+  if(CURRENT_USER&&CURRENT_USER.id!==user.id){
+    clearTimeout(SAVE_TIMER);clearInterval(TIMER.intervalId);DATA_READY=false;SAVE_STATUS='saved';
+  }
+  CURRENT_USER=user;
+  renderDataLoading();
+  const ok=await loadState();
+  if(!ok){renderDataLoadError();return false;}
+  restoreTimerRuntime();
   render();
+  if(TIMER.running)refreshTimerDisplay();
+  return true;
 }
 (async function init(){
-  const { data: { session } } = await sb.auth.getSession();
-  if(session && session.user){
-    await bootAuthenticated(session.user);
-  } else {
+  try{
+    const {data:{session},error}=await sb.auth.getSession();
+    if(error)throw error;
+    if(PASSWORD_RECOVERY_MODE)renderPasswordRecovery();else if(session?.user)await bootAuthenticated(session.user);
+    else renderPublicLanding();
+  }catch(e){
+    console.error('Falha ao iniciar autenticação',e);
+    AUTH_MSG={type:'error',text:'Não foi possível iniciar sua sessão. Recarregue a página e tente novamente.'};
     renderAuth();
   }
-  sb.auth.onAuthStateChange(async (event, session)=>{
-    if(event==='SIGNED_IN' && session && (!CURRENT_USER || CURRENT_USER.id!==session.user.id)){
-      await bootAuthenticated(session.user);
+  sb.auth.onAuthStateChange((event,session)=>{
+    if(event==='PASSWORD_RECOVERY'){
+      PASSWORD_RECOVERY_MODE=true;
+      AUTH_MSG=null;
+      renderPasswordRecovery();
+      return;
+    }
+    if(event==='SIGNED_IN'&&!PASSWORD_RECOVERY_MODE&&session?.user&&(!CURRENT_USER||CURRENT_USER.id!==session.user.id)){
+      queueMicrotask(()=>bootAuthenticated(session.user));
     }
     if(event==='SIGNED_OUT'){
-      CURRENT_USER = null;
-      STATE = defaultState();
-      AUTH_MODE='login'; AUTH_MSG=null;
-      renderAuth();
+      clearTimeout(SAVE_TIMER);clearInterval(TIMER.intervalId);
+      CURRENT_USER=null;DATA_READY=false;DATA_LOAD_ERROR=null;
+      STATE=defaultState();SAVE_STATUS='saved';SAVING=false;SAVE_VERSION++;
+      PASSWORD_RECOVERY_MODE=false;AUTH_MODE='login';AUTH_MSG=null;
+      AUTH_VIEW='landing';renderPublicLanding();
     }
   });
+  const recoveryParams=new URLSearchParams(String(window.location.hash||'').replace(/^#/,''));
+  if(recoveryParams.get('type')==='recovery'){
+    PASSWORD_RECOVERY_MODE=true;
+    renderPasswordRecovery();
+  }
 })();
 </script>
 </body>

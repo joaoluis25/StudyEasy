@@ -94,7 +94,7 @@ function normalizeState(raw){
   const checklist=v=>Array.isArray(v)?v.slice(0,100).map(c=>({done:!!c?.done,text:String(c?.text||'').slice(0,500)})).filter(c=>c.text.trim()):[];
   const topics=arr('topics').slice(0,1000).map(t=>({id:cleanId(t?.id),name:String(t?.name||'').slice(0,200),parentId:typeof t?.parentId==='string'?t.parentId:null,color:Math.max(1,Math.min(20,Number(t?.color)||1)),progress:Math.max(0,Math.min(100,Number(t?.progress)||0))})).filter(t=>t.name.trim());
   const topicIds=new Set(topics.map(t=>t.id)); topics.forEach(t=>{if(t.parentId===t.id||!topicIds.has(t.parentId))t.parentId=null;});
-  const notes=arr('notes').slice(0,2000).map(n=>({id:cleanId(n?.id),title:String(n?.title||'').slice(0,300),html:sanitizeNoteHtml(String(n?.html||'')),topicId:topicIds.has(n?.topicId)?n.topicId:null,tags:Array.isArray(n?.tags)?n.tags.slice(0,50).map(x=>String(x).slice(0,80)).filter(Boolean):[],checklist:checklist(n?.checklist),priority:['low','normal','high'].includes(n?.priority)?n.priority:'normal',favorite:!!n?.favorite,reviewOn:!!n?.reviewOn,nextReview:cleanDate(n?.nextReview),interval:Math.max(0,Math.min(100,Number(n?.interval)||0)),reviewHistory:Array.isArray(n?.reviewHistory)?n.reviewHistory.slice(-500).map(r=>({date:cleanDate(r?.date)||todayISO(),intervalDays:Math.max(1,Math.min(365,Number(r?.intervalDays)||1)),nextReview:cleanDate(r?.nextReview)})):[],createdAt:cleanTimestamp(n?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(n?.updatedAt)||cleanTimestamp(n?.createdAt)||new Date().toISOString()}));
+  const notes=arr('notes').slice(0,2000).map(n=>({id:cleanId(n?.id),title:String(n?.title||'').slice(0,300),html:sanitizeNoteHtml(String(n?.html||'')),topicId:topicIds.has(n?.topicId)?n.topicId:null,tags:Array.isArray(n?.tags)?n.tags.slice(0,50).map(x=>String(x).slice(0,80)).filter(Boolean):[],checklist:checklist(n?.checklist),priority:['low','normal','high'].includes(n?.priority)?n.priority:'normal',favorite:!!n?.favorite,reviewOn:!!n?.reviewOn,nextReview:cleanDate(n?.nextReview),interval:Math.max(0,Math.min(100,Number(n?.interval)||0)),reviewHistory:Array.isArray(n?.reviewHistory)?n.reviewHistory.slice(-500).map(r=>({date:cleanDate(r?.date)||todayISO(),rating:['again','hard','good','easy'].includes(r?.rating)?r.rating:'good',intervalDays:Math.max(1,Math.min(3650,Number(r?.intervalDays)||1)),nextReview:cleanDate(r?.nextReview)})):[],createdAt:cleanTimestamp(n?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(n?.updatedAt)||cleanTimestamp(n?.createdAt)||new Date().toISOString()}));
   const goals=arr('goals').slice(0,1000).map(g=>{
     const rawStatus=String(g?.status||'andamento').toLowerCase();
     const status=rawStatus==='concluida'?'concluida':(['pausada','paused'].includes(rawStatus)?'pausada':'andamento');
@@ -169,7 +169,7 @@ function normalizeState(raw){
   }).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
   const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
   const legacyBrk=Math.max(0,Math.min(180,pom.brk===0?0:(Number.isFinite(Number(pom.brk))?Number(pom.brk):5)));
-  return {...base,schemaVersion:2,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
+  return {...base,schemaVersion:2,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals,reviewPersonalization:settings.reviewPersonalization&&typeof settings.reviewPersonalization==='object'?{again:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.again)||1)),hard:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.hard)||.7)),good:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.good)||1)),easy:Math.max(.2,Math.min(4,Number(settings.reviewPersonalization.easy)||1.5)),minimum:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.minimum)||1)),maximum:Math.max(1,Math.min(3650,Number(settings.reviewPersonalization.maximum)||365))}:undefined}};
 }
 async function loadState(){
   if(!CURRENT_USER)return false;
@@ -431,6 +431,7 @@ const ROUTES = [
   {id:'estatisticas', label:'Estatísticas', ic:'📊'},
   {id:'favoritos', label:'Favoritos', ic:'⭐'},
   {id:'historico', label:'Histórico', ic:'🗂️'},
+  {id:'assistente', label:'Assistente IA', ic:'✦'},
   {id:'config', label:'Configurações', ic:'⚙️'},
 ];
 const ROUTE_TITLES = Object.fromEntries(ROUTES.map(r=>[r.id, r.label]));
@@ -518,6 +519,7 @@ function renderRoute(){
     case 'estatisticas': return viewEstatisticas();
     case 'favoritos': return viewFavoritos();
     case 'historico': return viewHistorico();
+    case 'assistente': return viewAssistenteIA();
     case 'config': return viewConfig();
     default: return '';
   }
@@ -1253,6 +1255,7 @@ function viewRevisoes(){
       <div class="stat-card"><div class="num" style="color:var(--amber)">${due.length-overdueCount}</div><div class="lbl">para revisar hoje</div></div>
       <div class="stat-card"><div class="num">${upcoming.length}</div><div class="lbl">agendadas</div></div>
     </div>
+    ${reviewSettingsPanel()}
     <div class="section-title">📖 Revisões pendentes</div>
     <div class="card" style="padding:6px 16px; margin-bottom:20px;">
       ${due.length? due.map(n=>`
@@ -1260,7 +1263,7 @@ function viewRevisoes(){
           <span class="pill ${n.nextReview<todayISO()?'pill-red':'pill-amber'}">${n.nextReview<todayISO()?'atrasada':'hoje'}</span>
           <span style="flex:1;font-size:13px;cursor:pointer;" onclick="openNoteModal('${n.id}')">${esc(n.title||'Sem título')}</span>
           ${n.topicId?`<span class="tag-chip">${esc(topicPath(n.topicId))}</span>`:''}
-          <button class="btn btn-sm" onclick="markReviewed('${n.id}')">✓ Revisado</button>
+          <button class="btn btn-sm btn-primary" onclick="openReviewPractice('${n.id}')">Revisar agora</button>
         </div>`).join('') : emptyRow('Tudo em dia! 🎉')}
     </div>
     <div class="section-title">Próximas revisões</div>
@@ -1289,6 +1292,46 @@ function markReviewed(id){
   n.updatedAt=new Date().toISOString();
   saveState();render();toast('Revisão registrada · próxima em '+days+' dias');
 }
+
+/* Revisão ativa e personalização adaptativa: intervalos simples, não FSRS. */
+function reviewSettings(){return STATE.settings.reviewPersonalization||{again:1,hard:0.7,good:1,easy:1.5,minimum:1,maximum:365};}
+function openReviewPractice(id){
+ const n=STATE.notes.find(x=>x.id===id);if(!n)return;
+ showModal(`<div class="modal-head"><h2>Revisão ativa</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+ <p class="review-eyebrow">${esc(n.topicId?topicPath(n.topicId):'Anotação')}</p><h3>${esc(n.title||'Sem título')}</h3>
+ <p class="review-help">Tente explicar de memória o assunto antes de consultar sua anotação.</p>
+ <div class="review-prompt" id="reviewPrompt">O que você consegue lembrar sem consultar?</div>
+ <button class="btn" id="reviewReveal" onclick="document.getElementById('reviewAnswer').hidden=false;this.hidden=true">Mostrar anotação</button>
+ <div id="reviewAnswer" hidden><div class="review-material">${sanitizeNoteHtml(n.html)}</div><p class="review-help">Como foi sua lembrança?</p>
+ <div class="review-grades"><button class="btn" onclick="gradeNoteReview('${n.id}','again')">↻ Não lembrei</button><button class="btn" onclick="gradeNoteReview('${n.id}','hard')">Difícil</button><button class="btn btn-primary" onclick="gradeNoteReview('${n.id}','good')">Bom</button><button class="btn" onclick="gradeNoteReview('${n.id}','easy')">Fácil</button></div></div>`,true,'review-practice');
+}
+function gradeNoteReview(id,grade){
+ const n=STATE.notes.find(x=>x.id===id);if(!n)return;
+ const cfg=reviewSettings();const levels=(STATE.settings.reviewIntervals||[1,3,7,16,35]);
+ const ix=Math.max(0,Math.min(levels.length-1,Math.floor(Number(n.interval)||0)));
+ const modifiers={again:0,hard:Number(cfg.hard)||0.7,good:Number(cfg.good)||1,easy:Number(cfg.easy)||1.5};
+ const base=grade==='again'?Number(cfg.again)||1:Number(levels[ix])||1;
+ const days=Math.round(Math.max(Number(cfg.minimum)||1,Math.min(Number(cfg.maximum)||365,base*(modifiers[grade]??1))));
+ const next=new Date();next.setHours(12,0,0,0);next.setDate(next.getDate()+days);
+ n.nextReview=localDateISO(next);n.interval=grade==='again'?0:Math.min(ix+(grade==='easy'?2:grade==='good'?1:0),levels.length-1);
+ n.reviewHistory=Array.isArray(n.reviewHistory)?n.reviewHistory:[];
+ n.reviewHistory.push({date:todayISO(),rating:grade,intervalDays:days,nextReview:n.nextReview});n.reviewHistory=n.reviewHistory.slice(-500);
+ n.updatedAt=new Date().toISOString();saveState();closeModal();render();toast('Revisão registrada · próxima em '+days+' dia(s)');
+}
+function saveReviewPersonalization(){
+ const get=(id,def)=>{const v=Number(document.getElementById(id)?.value);return Number.isFinite(v)?v:def;};
+ const minimum=Math.max(1,Math.min(30,Math.round(get('rpMin',1))));
+ const maximum=Math.max(minimum,Math.min(3650,Math.round(get('rpMax',365))));
+ STATE.settings.reviewPersonalization={again:Math.max(1,Math.min(30,Math.round(get('rpAgain',1)))),hard:Math.max(.2,Math.min(3,get('rpHard',.7))),good:Math.max(.2,Math.min(3,get('rpGood',1))),easy:Math.max(.2,Math.min(4,get('rpEasy',1.5))),minimum,maximum};
+ saveState();toast('Preferências de revisão salvas');render();
+}
+function reviewSettingsPanel(){const c=reviewSettings();return `<div class="card" style="margin-bottom:16px"><div class="section-title">⚙ Personalização das revisões</div><p class="review-help">Configure quantos dias esperar e como cada avaliação altera o próximo intervalo. Os intervalos-base ficam em Configurações.</p><div class="review-grid">
+ <div class="field"><label>Não lembrei · dias</label><input id="rpAgain" type="number" min="1" max="30" value="${c.again}"></div>
+ <div class="field"><label>Difícil · multiplicador</label><input id="rpHard" type="number" min="0.2" max="3" step="0.1" value="${c.hard}"></div>
+ <div class="field"><label>Bom · multiplicador</label><input id="rpGood" type="number" min="0.2" max="3" step="0.1" value="${c.good}"></div>
+ <div class="field"><label>Fácil · multiplicador</label><input id="rpEasy" type="number" min="0.2" max="4" step="0.1" value="${c.easy}"></div>
+ <div class="field"><label>Intervalo mínimo · dias</label><input id="rpMin" type="number" min="1" value="${c.minimum}"></div>
+ <div class="field"><label>Intervalo máximo · dias</label><input id="rpMax" type="number" min="1" value="${c.maximum}"></div></div><button class="btn btn-primary btn-sm" onclick="saveReviewPersonalization()">Salvar preferências</button></div>`;}
 
 /* =====================================================================
    SESSÕES / POMODORO
@@ -1335,6 +1378,7 @@ function viewSessoes(){
               <span class="session-date">${fmtDateShort(s.date)}</span>
               <span class="session-topic">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
               <span class="pill pill-teal">${minutesToHM(s.duration||0)}</span>
+              <button class="btn btn-sm" onclick="openSessionModal('${s.id}')" aria-label="Editar área, data e duração da sessão">✎ Editar</button>
               <button class="icon-btn btn-sm btn-trash" title="Excluir sessão" aria-label="Excluir sessão" onclick="deleteSession('${s.id}')">🗑</button>
             </div>`).join('') : emptyRow('Nenhuma sessão registrada ainda.')}
         </div>
@@ -2787,6 +2831,8 @@ function viewHistorico(){
 /* =====================================================================
    CONFIGURAÇÕES
 ===================================================================== */
+function viewAssistenteIA(){return `<div class="card" style="max-width:850px"><div class="section-title">✦ Assistente de estudos com IA</div><p class="review-help">Resuma conteúdos, solicite explicações simples ou crie perguntas para praticar. A integração precisa de uma função de servidor configurada em seu Supabase; nenhuma chave de IA é exposta no navegador.</p><div class="field"><label for="aiSource">Conteúdo para estudar</label><textarea id="aiSource" rows="9" maxlength="12000" placeholder="Cole seu material ou trecho de anotação..."></textarea></div><div class="field"><label for="aiTask">O que deseja fazer?</label><select id="aiTask"><option value="resumo">Resumo organizado</option><option value="explicacao">Explicação passo a passo</option><option value="questoes">Perguntas de revisão</option></select></div><button class="btn btn-primary" onclick="runStudyAI()" id="aiSubmit">✦ Gerar com IA</button><p class="review-help">Revise as informações geradas antes de usá-las para estudar. Não insira senhas, documentos pessoais ou dados sensíveis.</p><div id="aiResult" class="ai-result" role="status" aria-live="polite"></div></div>`;}
+async function runStudyAI(){const input=document.getElementById('aiSource')?.value.trim(),task=document.getElementById('aiTask')?.value,result=document.getElementById('aiResult'),button=document.getElementById('aiSubmit');if(!input||input.length<20){toast('Insira ao menos 20 caracteres');return;}if(!CURRENT_USER){toast('Entre na sua conta');return;}button.disabled=true;button.textContent='Gerando...';result.textContent='Consultando o assistente...';try{const {data,error}=await sb.functions.invoke('study-ai',{body:{task,text:input.slice(0,12000)}});if(error)throw error;if(!data||typeof data.result!=='string')throw Error('Resposta inválida do servidor');result.textContent=data.result;}catch(e){console.warn('Assistente IA indisponível',e);result.textContent='A IA ainda não está configurada neste projeto. Publique a Edge Function study-ai e configure a chave no servidor conforme o guia do pacote.';}finally{button.disabled=false;button.textContent='✦ Gerar com IA';}}
 function viewConfig(){
   const s=STATE.settings, p=s.pomodoro;
   return `
@@ -3073,20 +3119,32 @@ function runSearch(q){
 ===================================================================== */
 const EDITOR_THEME_KEY='central-estudos-editor-theme-v2';
 let EDITOR_THEME=localStorage.getItem(EDITOR_THEME_KEY)==='light'?'light':'dark';
-let DRAFT_TIMEOUT=null, ACTIVE_DRAFT_KEY=null;
+let DRAFT_TIMEOUT=null, ACTIVE_DRAFT_KEY=null, DRAFT_CLOUD_TIMER=null;
 function editorThemeControl(){return `<button type="button" class="btn btn-sm editor-theme-button" onclick="toggleEditorTheme()" title="Alternar apenas os campos de edição">${EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro'}</button>`;}
 function applyEditorTheme(){document.querySelectorAll('.modal-overlay .editor-body,.modal-overlay .question-editor-body,.modal-overlay textarea,.modal-overlay input[type=text],.modal-overlay input:not([type]),.modal-overlay [contenteditable=true]').forEach(el=>el.classList.toggle('editor-light',EDITOR_THEME==='light'));}
 function toggleEditorTheme(){EDITOR_THEME=EDITOR_THEME==='light'?'dark':'light';localStorage.setItem(EDITOR_THEME_KEY,EDITOR_THEME);applyEditorTheme();document.querySelectorAll('.editor-theme-button').forEach(el=>el.textContent=EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro');}
-function draftKeyForModal(){const m=document.getElementById('activeModalOverlay');if(!m)return null;const fields=['mNoteBody','mFlashFront','mQuestionBody','mGoalTitle','mDoubtQ','mSessObs'];const match=fields.find(id=>m.querySelector('#'+id));return match?'ce-draft-'+(CURRENT_USER?.id||'anon')+'-'+match+'-'+(m.querySelector('[data-draft-id]')?.dataset.draftId||'new'):null;}
+function draftKeyForModal(){const m=document.getElementById('activeModalOverlay');if(!m)return null;const fields=['mNoteBody','mFlashFront','mQuestionBody','mGoalTitle','mDoubtQ','mSessObs'];const match=fields.find(id=>m.querySelector('#'+id));const saveAction=m.querySelector('[onclick^="saveNote("],[onclick^="saveQuestion("],[onclick^="saveSession("],[onclick^="saveFlashcard("],[onclick^="saveGoal("]')?.getAttribute('onclick')||'';const editId=saveAction.match(/'([A-Za-z0-9_-]{6,80})'/)?.[1]||'new';return match?'ce-draft-'+(CURRENT_USER?.id||'anon')+'-'+match+'-'+editId:null;}
 function draftSnapshot(m){const out={};m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{if(el.type==='file'||el.type==='password'||el.type==='hidden'||el.type==='checkbox'||el.type==='radio')return;const key=el.id||'field-'+i;out[key]=el.isContentEditable?el.innerHTML:el.value;});return out;}
+function restoreDraftValues(modal,values){modal.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{const key=el.id||'field-'+i;if(values[key]===undefined)return;if(el.isContentEditable)el.innerHTML=sanitizeNoteHtml(values[key]);else if(!['password','file'].includes(el.type))el.value=values[key];el.dispatchEvent(new Event('change',{bubbles:false}));});}
+function offerDraftRecovery(modal,saved,key){if(modal.querySelector('.draft-recovery'))return;
+ const recovery=document.createElement('div');recovery.className='draft-recovery';recovery.setAttribute('role','region');recovery.setAttribute('aria-label','Recuperação de rascunho');
+ const date=new Date(saved.savedAt||Date.now()).toLocaleString('pt-BR');
+ recovery.innerHTML=`<div><strong>✦ Rascunho recuperável</strong><p>Encontramos alterações de ${esc(date)}. Deseja restaurá-las neste formulário?</p></div><div class="draft-recovery-actions"><button type="button" class="btn btn-primary btn-sm" data-action="restore">Restaurar</button><button type="button" class="btn btn-sm" data-action="discard">Descartar</button></div>`;
+ modal.querySelector('.modal')?.prepend(recovery);
+ recovery.querySelector('[data-action="restore"]').addEventListener('click',()=>{restoreDraftValues(modal,saved.values);recovery.remove();toast('Rascunho restaurado');});
+ recovery.querySelector('[data-action="discard"]').addEventListener('click',()=>{localStorage.removeItem(key);removeCloudDraft(key);recovery.remove();});
+}
 function attachDraftAutosave(){const m=document.getElementById('activeModalOverlay');if(!m)return;ACTIVE_DRAFT_KEY=draftKeyForModal();if(!ACTIVE_DRAFT_KEY)return;
  const key=ACTIVE_DRAFT_KEY;let saved=null;try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch{}
- if(saved&&saved.values&&confirm('Existe um rascunho de edição neste navegador. Deseja recuperá-lo?')){m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{const k=el.id||'field-'+i;if(saved.values[k]!==undefined){if(el.isContentEditable)el.innerHTML=sanitizeNoteHtml(saved.values[k]);else if(el.type!=='password'&&el.type!=='file')el.value=saved.values[k];}});}
- const handler=()=>{clearTimeout(DRAFT_TIMEOUT);DRAFT_TIMEOUT=setTimeout(()=>{try{localStorage.setItem(key,JSON.stringify({savedAt:Date.now(),values:draftSnapshot(m)}));const el=m.querySelector('.draft-status');if(el)el.textContent='Rascunho salvo neste dispositivo';}catch(e){console.warn('Rascunho indisponível',e);}},650);};
+ const handler=()=>{clearTimeout(DRAFT_TIMEOUT);DRAFT_TIMEOUT=setTimeout(()=>{const record={savedAt:Date.now(),values:draftSnapshot(m)};try{localStorage.setItem(key,JSON.stringify(record));const el=m.querySelector('.draft-status');if(el)el.textContent='✓ Rascunho local preservado · sincronizando…';}catch(e){console.warn('Rascunho indisponível',e);} scheduleCloudDraft(key,record,m);},550);};
  m.addEventListener('input',handler);m.addEventListener('change',handler);
- const footer=document.createElement('div');footer.className='draft-toolbar';footer.innerHTML=editorThemeControl()+'<span class="draft-status">Rascunho local automático · não sincronizado com a nuvem</span>';m.querySelector('.modal')?.prepend(footer);applyEditorTheme();
+ const footer=document.createElement('div');footer.className='draft-toolbar';footer.innerHTML=editorThemeControl()+'<span class="draft-status">Alterações em rascunho são preservadas automaticamente neste dispositivo</span>';m.querySelector('.modal')?.prepend(footer);applyEditorTheme();
+ if(saved&&saved.values)offerDraftRecovery(m,saved,key);loadCloudDraft(key,m,saved?.savedAt||0);
 }
-function clearActiveDraft(){clearTimeout(DRAFT_TIMEOUT);if(ACTIVE_DRAFT_KEY)localStorage.removeItem(ACTIVE_DRAFT_KEY);ACTIVE_DRAFT_KEY=null;}
+async function removeCloudDraft(key){if(!CURRENT_USER)return;try{await sb.from('study_drafts').delete().eq('user_id',CURRENT_USER.id).eq('draft_key',key);}catch(e){console.warn('Não foi possível apagar rascunho remoto',e);}}
+function scheduleCloudDraft(key,record,modal){if(!CURRENT_USER||!DATA_READY)return;clearTimeout(DRAFT_CLOUD_TIMER);DRAFT_CLOUD_TIMER=setTimeout(async()=>{try{const {error}=await sb.from('study_drafts').upsert({user_id:CURRENT_USER.id,draft_key:key,data:record,updated_at:new Date().toISOString()},{onConflict:'user_id,draft_key'});if(error)throw error;if(modal.isConnected){const el=modal.querySelector('.draft-status');if(el)el.textContent='☁ Rascunho salvo na nuvem';}}catch(e){if(modal.isConnected){const el=modal.querySelector('.draft-status');if(el)el.textContent='✓ Rascunho local salvo · nuvem indisponível';}}},1000);}
+async function loadCloudDraft(key,modal,localTimestamp){if(!CURRENT_USER)return;try{const {data,error}=await sb.from('study_drafts').select('data').eq('user_id',CURRENT_USER.id).eq('draft_key',key).maybeSingle();if(error||!modal.isConnected||!data?.data?.values)return;if(Number(data.data.savedAt)>localTimestamp){offerDraftRecovery(modal,data.data,key);}}catch(e){console.warn('Rascunho remoto não acessível',e);}}
+function clearActiveDraft(){clearTimeout(DRAFT_TIMEOUT);clearTimeout(DRAFT_CLOUD_TIMER);if(ACTIVE_DRAFT_KEY){localStorage.removeItem(ACTIVE_DRAFT_KEY);removeCloudDraft(ACTIVE_DRAFT_KEY);}ACTIVE_DRAFT_KEY=null;}
 function showModal(innerHtml, wide, extraClass){
   const overlay = document.createElement('div');
   overlay.className='modal-overlay';
@@ -3226,7 +3284,7 @@ function renderAuth(){
           <div class="field"><label for="authPassword">Senha</label><input type="password" id="authPassword" autocomplete="${AUTH_MODE==='login'?'current-password':'new-password'}" required minlength="8" placeholder="mínimo 8 caracteres"></div>
           <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px;" id="authSubmitBtn">${AUTH_MODE==='login'?'Entrar':'Criar conta'}</button>
         </form>
-        ${AUTH_MODE==='login'? `<div style="text-align:center;margin-top:12px;"><a class="es_key" onclick="handleForgotPassword()">Esqueci minha senha</a></div>` : ''}
+        ${AUTH_MODE==='login'? `<div style="display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:12px;"><button type="button" class="btn btn-ghost btn-sm" onclick="handleForgotPassword()">Esqueci minha senha</button><button type="button" class="btn btn-ghost btn-sm" onclick="resendVerificationEmail()">Reenviar e-mail de confirmação</button></div>` : ''}
         <div class="auth-foot">Seu espaço pessoal para organizar matérias, anotações, questões e sessões de estudo.</div>
       </div>
     </div>
@@ -3295,6 +3353,7 @@ async function handleAuthSubmit(e){
   }
   return false;
 }
+async function resendVerificationEmail(){const email=document.getElementById('authEmail')?.value.trim();if(!email){AUTH_MSG={type:'error',text:'Informe seu e-mail antes de solicitar um novo link.'};renderAuth();return;}try{const {error}=await sb.auth.resend({type:'signup',email,options:{emailRedirectTo:APP_REDIRECT_URL()}});if(error)throw error;AUTH_MSG={type:'success',text:'Se a conta estiver pendente de confirmação, você receberá um novo link.'};}catch(e){AUTH_MSG={type:'error',text:translateAuthError(e.message)};}renderAuth();}
 async function handleForgotPassword(){
   const email = document.getElementById('authEmail').value.trim();
   if(!email){ AUTH_MSG={type:'error',text:'Digite seu e-mail no campo acima primeiro.'}; renderAuth(); return; }
