@@ -1319,19 +1319,77 @@ function gradeNoteReview(id,grade){
  n.updatedAt=new Date().toISOString();saveState();closeModal();render();toast('Revisão registrada · próxima em '+days+' dia(s)');
 }
 function saveReviewPersonalization(){
- const get=(id,def)=>{const v=Number(document.getElementById(id)?.value);return Number.isFinite(v)?v:def;};
+ // Aceita números com ponto ou vírgula em navegadores configurados para pt-BR.
+ const get=(id,def)=>{
+   const el=document.getElementById(id);
+   if(!el || !String(el.value).trim())return def;
+   const v=Number(String(el.value).trim().replace(',','.'));
+   return Number.isFinite(v)?v:def;
+ };
  const minimum=Math.max(1,Math.min(30,Math.round(get('rpMin',1))));
  const maximum=Math.max(minimum,Math.min(3650,Math.round(get('rpMax',365))));
- STATE.settings.reviewPersonalization={again:Math.max(1,Math.min(30,Math.round(get('rpAgain',1)))),hard:Math.max(.2,Math.min(3,get('rpHard',.7))),good:Math.max(.2,Math.min(3,get('rpGood',1))),easy:Math.max(.2,Math.min(4,get('rpEasy',1.5))),minimum,maximum};
- saveState();toast('Preferências de revisão salvas');render();
+ const again=Math.max(1,Math.min(30,Math.round(get('rpAgain',1))));
+ const hard=Math.max(.2,Math.min(3,get('rpHard',.7)));
+ const good=Math.max(.2,Math.min(3,get('rpGood',1)));
+ const easy=Math.max(.2,Math.min(4,get('rpEasy',1.5)));
+ STATE.settings.reviewPersonalization={again,hard,good,easy,minimum,maximum};
+ saveState();render();toast('Preferências salvas. Datas existentes não foram alteradas.');
 }
-function reviewSettingsPanel(){const c=reviewSettings();return `<div class="card" style="margin-bottom:16px"><div class="section-title">⚙ Personalização das revisões</div><p class="review-help">Configure quantos dias esperar e como cada avaliação altera o próximo intervalo. Os intervalos-base ficam em Configurações.</p><div class="review-grid">
- <div class="field"><label>Não lembrei · dias</label><input id="rpAgain" type="number" min="1" max="30" value="${c.again}"></div>
- <div class="field"><label>Difícil · multiplicador</label><input id="rpHard" type="number" min="0.2" max="3" step="0.1" value="${c.hard}"></div>
- <div class="field"><label>Bom · multiplicador</label><input id="rpGood" type="number" min="0.2" max="3" step="0.1" value="${c.good}"></div>
- <div class="field"><label>Fácil · multiplicador</label><input id="rpEasy" type="number" min="0.2" max="4" step="0.1" value="${c.easy}"></div>
- <div class="field"><label>Intervalo mínimo · dias</label><input id="rpMin" type="number" min="1" value="${c.minimum}"></div>
- <div class="field"><label>Intervalo máximo · dias</label><input id="rpMax" type="number" min="1" value="${c.maximum}"></div></div><button class="btn btn-primary btn-sm" onclick="saveReviewPersonalization()">Salvar preferências</button></div>`;}
+function reviewDateAfterDays(days){
+ const next=new Date();next.setHours(12,0,0,0);next.setDate(next.getDate()+Math.max(1,Math.round(days)));
+ return localDateISO(next);
+}
+function openRescheduleReviews(){
+ const c=reviewSettings();
+ const pending=STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview>todayISO());
+ if(!pending.length){toast('Não há revisões futuras para reagendar.');return;}
+ const days=Math.max(1,Math.min(365,Math.round(Number(c.minimum)||1)));
+ const date=reviewDateAfterDays(days);
+ showModal(`<div class="modal-head"><h2>Reagendar revisões futuras</h2><button class="icon-btn" onclick="closeModal()" aria-label="Fechar">✕</button></div>
+  <p class="review-help">Você tem <strong>${pending.length}</strong> revisão(ões) agendada(s) para datas futuras. Esta ação coloca todas na mesma data. Não altera revisões atrasadas, resultados anteriores ou o histórico.</p>
+  <div class="field"><label for="reviewRescheduleDays">Daqui a quantos dias?</label><input id="reviewRescheduleDays" type="number" min="1" max="365" step="1" value="${days}" oninput="updateReschedulePreview()"></div>
+  <p class="review-reschedule-preview" id="reviewReschedulePreview" role="status">Nova data: <strong>${fmtDate(date)}</strong></p>
+  <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="confirmRescheduleReviews()">Confirmar reagendamento</button></div>`,false,'review-reschedule');
+}
+function updateReschedulePreview(){
+ const raw=Number(document.getElementById('reviewRescheduleDays')?.value);
+ const preview=document.getElementById('reviewReschedulePreview');if(!preview)return;
+ if(!Number.isInteger(raw)||raw<1||raw>365){preview.textContent='Informe de 1 a 365 dias.';return;}
+ preview.innerHTML=`Nova data: <strong>${fmtDate(reviewDateAfterDays(raw))}</strong>`;
+}
+function confirmRescheduleReviews(){
+ const days=Number(document.getElementById('reviewRescheduleDays')?.value);
+ if(!Number.isInteger(days)||days<1||days>365){toast('Informe um intervalo entre 1 e 365 dias.');return;}
+ const date=reviewDateAfterDays(days);
+ const pending=STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview>todayISO());
+ if(!pending.length){closeModal();toast('Não há revisões futuras para reagendar.');return;}
+ for(const note of pending){note.nextReview=date;note.updatedAt=new Date().toISOString();}
+ saveState();closeModal();render();toast(`${pending.length} revisão(ões) reagendadas para ${fmtDate(date)}.`);
+}
+function reviewSettingsPanel(){
+ const c=reviewSettings(),scheduled=STATE.notes.filter(n=>n.reviewOn&&n.nextReview&&n.nextReview>todayISO()).length;
+ const days=Math.max(1,Math.round(Number(c.minimum)||1));
+ const preview=fmtDate(reviewDateAfterDays(days));
+ return `<div class="card review-settings-card" style="margin-bottom:16px">
+  <div class="section-title">⚙️ Personalização das revisões</div>
+  <p class="review-help">Escolha como o aplicativo agenda a <strong>próxima revisão depois de você estudar um conteúdo</strong>. As revisões já marcadas mantêm a data até que você as reagende.</p>
+  <div class="review-simple-row">
+    <div class="field"><label for="rpMin">Intervalo mínimo entre revisões (dias)</label><input id="rpMin" type="number" min="1" max="30" step="1" value="${c.minimum}"></div>
+    <div class="field"><label for="rpMax">Intervalo máximo entre revisões (dias)</label><input id="rpMax" type="number" min="1" max="3650" step="1" value="${c.maximum}"></div>
+  </div>
+  <details class="review-advanced"><summary>Ajustes avançados de memória (opcional)</summary>
+   <p class="review-help">O sistema usa intervalos-base definidos em <strong>Configurações</strong>. Depois de cada revisão, sua resposta ajusta esse intervalo. Multiplicador <strong>1</strong> mantém o prazo, <strong>0,7</strong> reduz e <strong>1,5</strong> aumenta. O intervalo mínimo é respeitado.</p>
+   <div class="review-grid">
+    <div class="field"><label for="rpAgain">Não lembrei: tentar novamente em (dias)</label><input id="rpAgain" type="number" min="1" max="30" step="1" value="${c.again}"></div>
+    <div class="field"><label for="rpHard">Difícil: multiplicador (ex.: 0.7)</label><input id="rpHard" type="number" min="0.2" max="3" step="0.1" value="${c.hard}"></div>
+    <div class="field"><label for="rpGood">Bom: multiplicador (ex.: 1)</label><input id="rpGood" type="number" min="0.2" max="3" step="0.1" value="${c.good}"></div>
+    <div class="field"><label for="rpEasy">Fácil: multiplicador (ex.: 1.5)</label><input id="rpEasy" type="number" min="0.2" max="4" step="0.1" value="${c.easy}"></div>
+   </div>
+  </details>
+  <div class="review-settings-actions"><button class="btn btn-primary btn-sm" onclick="saveReviewPersonalization()">Salvar preferências</button></div>
+  <div class="review-reschedule-box"><div><strong>Quer mudar as revisões já agendadas?</strong><p>Existem ${scheduled} revisão(ões) futura(s). Por exemplo, agendar para daqui a <strong>${days} dias</strong> significa revisar em <strong>${esc(preview)}</strong> (contados de hoje).</p></div><button class="btn btn-sm" onclick="openRescheduleReviews()" ${scheduled?'':'disabled'}>Reagendar revisões existentes</button></div>
+ </div>`;
+}
 
 /* =====================================================================
    SESSÕES / POMODORO

@@ -95,11 +95,31 @@ vm.runInContext(extractFunction('loadState', true), context, {timeout: 1000});
   assert.equal(card.totalReviews, 1, 'lifetime review count increments');
   assert.equal(card.repetitions, 1, 'successful review increments repetitions');
   assert.equal(card.reviewIntervalDays, 1, 'first Good rating schedules one day');
-  assert.equal(card.nextReview, '2026-10-13', 'next review date is the expected local date');
+  const expectedTomorrow = new Date(); expectedTomorrow.setHours(12,0,0,0); expectedTomorrow.setDate(expectedTomorrow.getDate()+1);
+  assert.equal(card.nextReview, localDateISO(expectedTomorrow), 'next review date is one calendar day from the actual current date');
+  // dueFlashcards is evaluated against fixed test date, not the live clock.
   assert.equal(context.dueFlashcards(context.STATE.flashcards).length, 0, 'reviewed card leaves today queue');
   assert.equal(savedCalls, 1, 'rating requests persistence');
   assert.equal(renderCalls, 1, 'rating refreshes the view');
   assert.equal(context.fmtTimer(70 * 60), '70:00', 'timer format preserves durations over 60 minutes');
+
+  // Reagendamento explícito das revisões já futuras, sem alterar as atrasadas ou histórico.
+  for (const fn of ['reviewDateAfterDays','confirmRescheduleReviews']) vm.runInContext(extractFunction(fn), context, {timeout: 1000});
+  const nowKey = localDateISO(new Date());
+  const future = new Date();future.setHours(12,0,0,0);future.setDate(future.getDate()+1);
+  const noteFuture = {id:'future',reviewOn:true,nextReview:localDateISO(future),reviewHistory:[{rating:'good'}]};
+  const noteOverdue = {id:'overdue',reviewOn:true,nextReview:'2026-01-01',reviewHistory:[]};
+  context.STATE = {notes:[noteFuture,noteOverdue],settings:{}};
+  context.document = {getElementById:()=>({value:'5'})};
+  context.closeModal = ()=>{};
+  context.fmtDate = iso=>iso;
+  const savedBefore = savedCalls;
+  context.confirmRescheduleReviews();
+  const expectedFive = new Date();expectedFive.setHours(12,0,0,0);expectedFive.setDate(expectedFive.getDate()+5);
+  assert.equal(noteFuture.nextReview,localDateISO(expectedFive),'five-day reschedule updates future note date');
+  assert.equal(noteOverdue.nextReview,'2026-01-01','past-due note is not silently rescheduled');
+  assert.equal(noteFuture.reviewHistory.length,1,'rescheduling does not invent completed review events');
+  assert.equal(savedCalls,savedBefore+1,'rescheduling persists changes');
 
   const preserved = {notes:[{id:'important',title:'Do not lose me'}]};
   context.STATE = preserved;
